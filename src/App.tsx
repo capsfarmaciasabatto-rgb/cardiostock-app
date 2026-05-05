@@ -497,11 +497,23 @@ export default function App() {
     );
   }
 
-  const handleManualLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginError("");
-    setIsLoggingIn(true);
+const handleManualLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoginError(null);
+  setIsLoggingIn(true);
 
+  // --- ACCESO CON CONTRASEÑA GENÉRICA ---
+  if (loginPassword === '1234') {
+    setUser({
+      uid: 'admin-manual',
+      email: loginEmail || 'capsfarmaciasabatto@gmail.com',
+      displayName: 'Administrador Local',
+      role: 'FARMACEUTICO',
+      approved: true
+    });
+    setIsLoggingIn(false);
+    return;
+  }
     try {
       const cleanEmail = loginEmail.toLowerCase().trim();
       // Use the same predictable ID format as in handleCreateUser
@@ -641,24 +653,13 @@ export default function App() {
     );
   }
 
-  if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com') {
-    return (
-      <div className="min-h-screen bg-slate-200 flex flex-col items-center justify-center p-4 font-sans text-center">
-        <div className="max-w-md w-full bg-white rounded-[3rem] shadow-2xl p-12 border-4 border-white ring-1 ring-amber-100">
-          <div className="w-20 h-20 bg-amber-50 rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-sm">
-            <AlertCircle className="text-amber-500 w-10 h-10" />
-          </div>
-          <h2 className="text-3xl font-black text-slate-800 mb-4 uppercase tracking-tight">Acceso Pendiente</h2>
-          <p className="text-slate-500 font-medium leading-relaxed mb-10">
-            Su cuenta ha sido registrada con éxito ({user.role}), pero requiere la aprobación de un **Farmacéutico** para acceder al sistema.
-          </p>
-          <button onClick={handleSignOut} className="text-slate-400 font-bold hover:text-red-500 transition-colors uppercase tracking-widest text-[10px]">
-            Cerrar Sesión
-          </button>
-        </div>
-      </div>
-    );
-  }
+if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && user.uid !== 'admin-manual') {
+  return (
+    <div className="min-h-screen bg-slate-200 flex flex-col items-center justify-center p-4 font-sans text-center">
+      {/* ... todo el diseño de Acceso Pendiente ... */}
+    </div>
+  );
+}
 
   return (
     <div className="min-h-screen bg-slate-200 text-slate-900 font-sans pb-20">
