@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global helpers
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'capsfarmaciasabatto@gmail.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Medicine Validation
+    function isValidMedicine(data) {
+      return data.droga is string && data.droga.size() <= 200 &&
+             data.nombreComercial is string && data.nombreComercial.size() <= 200 &&
+             (data.get('ubicacion', '') is string && data.get('ubicacion', '').size() <= 100) &&
+             data.stockActual is int &&
+             data.stockInicial is int &&
+             data.keys().hasAll(['droga', 'nombreComercial', 'stockActual', 'stockInicial']) &&
+             data.keys().size() <= 15;
+    }
+
+    // Movement Validation
+    function isValidMovement(data) {
+      return data.medicineId is string && isValidId(data.medicineId) &&
+             data.type in ['ingreso', 'dispensa'] &&
+             data.quantity is int && data.quantity > 0 &&
+             data.createdAt == request.time &&
+             data.keys().hasAll(['medicineId', 'type', 'quantity', 'createdAt']) &&
+             data.keys().size() <= 10;
+    }
+
+    match /medicines/{medicineId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn();
+      
+      allow create: if isSignedIn() && isValidId(medicineId) && isValidMedicine(incoming()) && 
+                    incoming().stockActual == incoming().stockInicial;
+      
+      allow update: if isSignedIn() && isValidMedicine(incoming()) && (
+        // Action: Stock Adjustment via Movement (The app uses a batch, but we check if only stockActual changed alongside updatedAt)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['stockActual', 'updatedAt']) && 
+         incoming().stockActual >= 0) ||
+        // Action: Edit metadata
+        (isAdmin() && incoming().diff(existing()).affectedKeys().hasAll(['droga', 'nombreComercial']))
+      );
+
+      match /movements/{movementId} {
+        allow get: if isSignedIn();
+        allow list: if isSignedIn();
+        
+        allow create: if isSignedIn() && isValidId(movementId) && isValidMovement(incoming()) &&
+                      // Atomic Check: We must verify that the parent medicine is updated in the same request
+                      // actually rules cannot enforce batch consistency across documents easily without existsAfter 
+                      // but since this is a subcollection we can't easily check stockActual here.
+                      // We'll rely on the parent medicine update rule's existence.
+                      existsAfter(/databases/$(database)/documents/medicines/$(medicineId));
+                      
+        allow update, delete: if false; // Movements are immutable audit logs
+      }
+    }
+  }
+}

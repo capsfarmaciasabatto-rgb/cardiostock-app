@@ -1,0 +1,130 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global helpers
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function getUserRole() {
+      return (request.auth.token.email == 'capsfarmaciasabatto@gmail.com') ? 'FARMACEUTICO' : get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'MEDICO');
+    }
+
+    function isApproved() {
+      return (request.auth.token.email == 'capsfarmaciasabatto@gmail.com') || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('approved', false) == true);
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'capsfarmaciasabatto@gmail.com' || 
+        (isApproved() && getUserRole() == 'FARMACEUTICO')
+      );
+    }
+
+    function isTecnico() {
+      return isSignedIn() && (isAdmin() || (isApproved() && getUserRole() == 'TECNICO'));
+    }
+
+    function isMedico() {
+      return isSignedIn() && (isAdmin() || isApproved());
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Medicine Validation
+    function isValidMedicine(data) {
+      return data.droga is string && data.droga.size() <= 200 &&
+             data.nombreComercial is string && data.nombreComercial.size() <= 200 &&
+             (data.get('ubicacion', '') is string && data.get('ubicacion', '').size() <= 100) &&
+             data.stockActual is int &&
+             data.keys().hasAll(['droga', 'nombreComercial', 'stockActual']) &&
+             data.keys().size() <= 15;
+    }
+
+    // Batch Validation
+    function isValidBatch(data) {
+      return data.vencimiento is string && data.vencimiento.size() <= 20 &&
+             data.quantity is int && data.quantity >= 0 &&
+             data.keys().hasAll(['vencimiento', 'quantity']) &&
+             data.keys().size() <= 5;
+    }
+
+    // Movement Validation
+    function isValidMovement(data) {
+      return data.medicineId is string && isValidId(data.medicineId) &&
+             data.type in ['ingreso', 'dispensa'] &&
+             data.quantity is int && data.quantity > 0 &&
+             (data.createdAt == request.time || data.createdAt == null) &&
+             data.keys().hasAll(['medicineId', 'type', 'quantity', 'createdAt']) &&
+             data.keys().size() <= 10;
+    }
+
+    // User Validation
+    function isValidUser(data) {
+      return (data.get('role', 'MEDICO') in ['MEDICO', 'TECNICO', 'FARMACEUTICO']) &&
+             (data.get('accessCode', '') is string && data.get('accessCode', '').size() <= 100) &&
+             (data.get('approved', false) is bool);
+    }
+
+    match /users/{userId} {
+      allow get: if (isSignedIn() && (request.auth.uid == userId || isAdmin())) || userId.startsWith('pre_');
+      allow list: if isSignedIn() && (isAdmin() || resource.data.email == request.auth.token.email);
+      allow update: if isAdmin() && isValidUser(incoming());
+      allow create: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+    }
+
+    match /global_movements/{mId} {
+      allow list, get: if isAdmin();
+      allow create: if isTecnico();
+    }
+
+    match /medicines/{medicineId} {
+      allow list, get: if isMedico();
+      
+      allow create: if isTecnico() && isValidId(medicineId) && isValidMedicine(incoming()) && 
+                    incoming().stockActual >= 0;
+      
+      allow update: if (
+        isAdmin() ||
+        (isTecnico() && (
+          // Action: Stock Adjustment via Movement/Batch sync
+          (incoming().diff(existing()).affectedKeys().hasOnly(['stockActual', 'updatedAt']) && 
+           incoming().stockActual >= 0) ||
+          // Action: Edit metadata (if we want to allow technicians too, otherwise just isAdmin)
+          (isValidMedicine(incoming()) && incoming().diff(existing()).affectedKeys().hasAll(['droga', 'nombreComercial']))
+        ))
+      );
+
+      match /batches/{batchId} {
+        allow list, get: if isMedico();
+        allow create, update: if isTecnico() && isValidId(batchId) && isValidBatch(incoming());
+        allow delete: if isAdmin();
+      }
+
+      match /movements/{movementId} {
+        allow get: if isMedico();
+        allow list: if isMedico();
+        
+        allow create: if isTecnico() && isValidId(movementId) && isValidMovement(incoming()) &&
+                      existsAfter(/databases/$(database)/documents/medicines/$(medicineId));
+                      
+        allow update, delete: if false;
+      }
+    }
+  }
+}

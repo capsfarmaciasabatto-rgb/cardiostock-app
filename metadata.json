@@ -1,0 +1,6 @@
+{
+  "name": "CardioStock - Gestión de Muestras",
+  "description": "Aplicación para el inventario y registro de movimientos de muestras médicas cardiológicas en farmacia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

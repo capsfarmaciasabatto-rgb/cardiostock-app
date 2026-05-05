@@ -1,0 +1,80 @@
+{
+  "entities": {
+    "Medicine": {
+      "title": "Medicina",
+      "description": "Detalles de un medicamento de muestra",
+      "type": "object",
+      "properties": {
+        "ubicacion": { "type": "string", "description": "Ubicación física (estante)" },
+        "droga": { "type": "string", "description": "Principio activo" },
+        "presentacion": { "type": "string", "description": "Forma farmacéutica" },
+        "nombreComercial": { "type": "string", "description": "Nombre de fantasía" },
+        "familia": { "type": "string", "description": "Grupo farmacológico" },
+        "observaciones": { "type": "string", "description": "Notas adicionales" },
+        "minStock": { "type": "number", "description": "Umbral para alertas de stock bajo" },
+        "stockActual": { "type": "number", "description": "Suma del stock de todos los lotes" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["droga", "nombreComercial", "stockActual"]
+    },
+    "Batch": {
+      "title": "Lote / Vencimiento",
+      "description": "Stock específico por fecha de vencimiento",
+      "type": "object",
+      "properties": {
+        "vencimiento": { "type": "string", "description": "Fecha de vencimiento (ISO o similar)" },
+        "quantity": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["vencimiento", "quantity"]
+    },
+    "User": {
+      "title": "Usuario",
+      "description": "Perfil de usuario con rol asignado",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["MEDICO", "TECNICO", "FARMACEUTICO"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role"]
+    },
+    "Movement": {
+      "title": "Movimiento",
+      "description": "Registro de ingreso o salida de stock",
+      "type": "object",
+      "properties": {
+        "medicineId": { "type": "string" },
+        "type": { "type": "string", "enum": ["ingreso", "dispensa"] },
+        "quantity": { "type": "number" },
+        "reason": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" }
+      },
+      "required": ["medicineId", "type", "quantity", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/medicines/{medicineId}": {
+      "schema": "Medicine",
+      "description": "Catálogo de medicamentos"
+    },
+    "/medicines/{medicineId}/batches/{batchId}": {
+      "schema": "Batch",
+      "description": "Lotes con vencimientos específicos"
+    },
+    "/medicines/{medicineId}/movements/{movementId}": {
+      "schema": "Movement",
+      "description": "Historial de movimientos por medicamento"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Perfiles y roles de usuario"
+    },
+    "/global_movements/{movementId}": {
+      "schema": "Movement",
+      "description": "Copia global de todos los movimientos para auditoría rápida"
+    }
+  }
+}
