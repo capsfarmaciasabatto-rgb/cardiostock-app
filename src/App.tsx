@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './lib/supabase'
-import { onAuthStateChanged } from 'firebase/auth';
 import { Medicine, Movement, MovementType, User, Batch, UserRole } from './types';
 import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -54,85 +53,7 @@ export default function App() {
     minStock: 0
   });
 
-  const handleSignIn = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    try {
-      await signIn();
-    } catch (error: any) {
-      if (error.code !== 'auth/cancelled-popup-request' && error.code !== 'auth/popup-closed-by-user') {
-        console.error('Login error:', error);
-        alert('Error al iniciar sesión. Por favor intenta de nuevo.');
-      }
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        setPendingUser(firebaseUser);
-        const userRef = doc(db, 'users', firebaseUser.uid);
-        let userSnap = await getDoc(userRef);
-        let userData = userSnap.exists() ? userSnap.data() : null;
-
-        // If not found by UID, try by email (for pre-registered users)
-        if (!userData && firebaseUser.email) {
-          try {
-            const q = query(collection(db, 'users'), where('email', '==', firebaseUser.email));
-            const querySnap = await getDocs(q);
-            if (!querySnap.empty) {
-              const firstDoc = querySnap.docs[0];
-              const oldData = firstDoc.data();
-              userData = oldData;
-              // Migrate to UID-based document for future logins
-              await setDoc(doc(db, 'users', firebaseUser.uid), {
-                ...oldData,
-                uid: firebaseUser.uid,
-                updatedAt: serverTimestamp()
-              });
-              // Delete the temporary/migration document if it's not the same as UID
-              if (firstDoc.id !== firebaseUser.uid) {
-                try {
-                  await deleteDoc(doc(db, 'users', firstDoc.id));
-                } catch (delError) {
-                  console.warn("Could not delete old user doc:", delError);
-                }
-              }
-            }
-          } catch (e) {
-            console.error("Error migrating user:", e);
-          }
-        }
-        
-        if (userData) {
-          setUser({
-            uid: firebaseUser.uid,
-            email: firebaseUser.email,
-            displayName: firebaseUser.displayName,
-            photoURL: firebaseUser.photoURL,
-            role: userData.role,
-            approved: firebaseUser.email === 'capsfarmaciasabatto@gmail.com' ? true : (userData.approved ?? true),
-            accessCode: userData.accessCode
-          });
-          setIsSelectingRole(false);
-        } else {
-          setIsSelectingRole(true);
-        }
-      } else {
-        setUser(null);
-        setPendingUser(null);
-        setIsSelectingRole(false);
-      }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
 useEffect(() => {
-    if (!user) return;
 
     const fetchMedicines = async () => {
       // Llamamos a la tabla que creaste en el SQL Editor
@@ -149,7 +70,7 @@ useEffect(() => {
     };
 
     fetchMedicines();
-  }, [user]);
+  }, []);
 
   const filteredMedicines = useMemo(() => {
     const filtered = medicines.filter(m => {
@@ -172,7 +93,7 @@ useEffect(() => {
   }, [medicines, searchTerm, filterLowStock, sortBy]);
 
 const handleSeedData = async () => {
-    if (!user || isSeeding) return;
+    if (isSeeding) return;
     setIsSeeding(true);
     try {
       // Preparamos los datos del JSON inicial para Supabase
