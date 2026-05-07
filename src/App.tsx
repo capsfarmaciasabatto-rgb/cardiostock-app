@@ -1,21 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  collection, 
-  onSnapshot, 
-  query, 
-  orderBy, 
-  setDoc, 
-  doc, 
-  getDoc,
-  Timestamp, 
-  writeBatch,
-  addDoc,
-  deleteDoc,
-  serverTimestamp,
-  getDocs,
-  where
-} from 'firebase/firestore';
-import { db, auth, signIn, signOut, handleFirestoreError, OperationType } from './firebase';
+import { supabase } from './lib/supabase'
 import { onAuthStateChanged } from 'firebase/auth';
 import { Medicine, Movement, MovementType, User, Batch, UserRole } from './types';
 import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check } from 'lucide-react';
@@ -147,22 +131,24 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
+useEffect(() => {
     if (!user) return;
-    if (!user.approved && user.email !== 'capsfarmaciasabatto@gmail.com') return;
 
-    const q = query(collection(db, 'medicines'), orderBy('droga', 'asc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data: Medicine[] = [];
-      snapshot.forEach((doc) => {
-        data.push({ id: doc.id, ...doc.data() } as Medicine);
-      });
-      setMedicines(data);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'medicines');
-    });
+    const fetchMedicines = async () => {
+      // Llamamos a la tabla que creaste en el SQL Editor
+      const { data, error } = await supabase
+        .from('medicines')
+        .select('*')
+        .order('droga', { ascending: true });
 
-    return () => unsubscribe();
+      if (error) {
+        console.error('Error al cargar medicamentos:', error);
+      } else {
+        setMedicines(data || []);
+      }
+    };
+
+    fetchMedicines();
   }, [user]);
 
   const filteredMedicines = useMemo(() => {
@@ -185,41 +171,34 @@ export default function App() {
     });
   }, [medicines, searchTerm, filterLowStock, sortBy]);
 
-  const handleSeedData = async () => {
+const handleSeedData = async () => {
     if (!user || isSeeding) return;
     setIsSeeding(true);
     try {
-      const batch = writeBatch(db);
-      for (const item of initialData) {
-        const medicineRef = doc(collection(db, 'medicines'));
-        const { stockActual, ...rest } = item as any;
-        
-        const medicineData = {
-          nombreComercial: rest.nombreComercial || '',
-          droga: rest.droga || '',
-          presentacion: rest.presentacion || '',
-          familia: rest.familia || '',
-          ubicacion: rest.ubicacion || '',
-          observaciones: rest.observaciones || '',
-          stockActual: stockActual || 0,
-          updatedAt: serverTimestamp()
-        };
-        batch.set(medicineRef, medicineData);
+      // Preparamos los datos del JSON inicial para Supabase
+      const medicinesToInsert = initialData.map(item => ({
+        droga: item.droga || '',
+        nombreComercial: item.nombreComercial || '',
+        presentacion: item.presentacion || '',
+        familia: item.familia || '',
+        ubicacion: item.ubicacion || '',
+        stockActual: item.stockActual || 0,
+        minStock: 5
+      }));
 
-        if (stockActual > 0) {
-          const batchRef = doc(collection(medicineRef, 'batches'));
-          batch.set(batchRef, {
-            vencimiento: rest.vencimiento || '2027-01',
-            quantity: stockActual,
-            updatedAt: serverTimestamp()
-          });
-        }
-      }
-      await batch.commit();
-      alert('Datos inicializados con éxito');
+      const { error } = await supabase
+        .from('medicines')
+        .insert(medicinesToInsert);
+
+      if (error) throw error;
+      
+      alert('¡Stock inicial cargado con éxito en Supabase!');
+      // Recargamos la página para ver los cambios
+      window.location.reload();
+      
     } catch (error) {
       console.error(error);
-      alert('Error inicializando datos.');
+      alert('Error al inicializar datos en Supabase.');
     } finally {
       setIsSeeding(false);
     }
@@ -235,71 +214,76 @@ export default function App() {
     if (!user || !editingMedicine) return;
     try {
       const { id, ...data } = editingMedicine as any;
-      await setDoc(doc(db, 'medicines', id), {
-        ...data,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+      // Actualizamos en Supabase buscando por la ID del medicamento
+      const { error } = await supabase
+        .from('medicines')
+        .update(data)
+        .eq('id', id);
+
+      if (error) throw error;
+      
       setShowEditMedicineModal(false);
       setEditingMedicine(null);
+      
+      // Refrescamos la lista para ver los cambios en la tabla
+      const { data: updatedList } = await supabase
+        .from('medicines')
+        .select('*')
+        .order('droga', { ascending: true });
+      setMedicines(updatedList || []);
+      
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `medicines/${editingMedicine.id}`);
+      console.error(error);
+      alert('Error al actualizar el medicamento en Supabase.');
     }
   };
 
   const handleUpdateBatch = async (batchId: string, quantity: number, vencimiento: string) => {
     if (!user || !selectedMedicine) return;
     try {
-      const batchRef = doc(db, `medicines/${selectedMedicine.id}/batches`, batchId);
-      const medicineRef = doc(db, 'medicines', selectedMedicine.id);
+      // Actualizamos directamente el stock y vencimiento en la tabla medicines
+      const { error } = await supabase
+        .from('medicines')
+        .update({ 
+          stockActual: quantity, 
+          fechaVencimiento: vencimiento 
+        })
+        .eq('id', selectedMedicine.id);
+
+      if (error) throw error;
       
-      const fireBatch = writeBatch(db);
-      
-      // Get the old batch to calculate stock difference
-      const oldBatchSnap = await getDoc(batchRef);
-      const oldQty = oldBatchSnap.data()?.quantity || 0;
-      const diff = quantity - oldQty;
-
-      fireBatch.update(batchRef, {
-        quantity,
-        vencimiento,
-        updatedAt: serverTimestamp()
-      });
-
-      fireBatch.update(medicineRef, {
-        stockActual: selectedMedicine.stockActual + diff,
-        updatedAt: serverTimestamp()
-      });
-
-      await fireBatch.commit();
       setShowEditBatchModal(false);
       setEditingBatch(null);
+      
+      // Refrescamos la lista para ver el nuevo stock
+      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+      setMedicines(updatedList || []);
+      
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `medicines/${selectedMedicine.id}/batches/${batchId}`);
+      console.error(error);
+      alert('Error al actualizar el stock en Supabase.');
     }
   };
 
   const handleAddMedicine = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    
+    // Suponiendo que tenés un estado 'newMedicine' con los datos del formulario
     try {
-      await addDoc(collection(db, 'medicines'), {
-        ...newMedicine,
-        minStock: parseInt(newMedicine.minStock as any) || 0,
-        stockActual: 0,
-        updatedAt: serverTimestamp()
-      });
+      const { error } = await supabase
+        .from('medicines')
+        .insert([newMedicine]);
+
+      if (error) throw error;
+
       setShowAddMedicineModal(false);
-      setNewMedicine({
-        nombreComercial: '',
-        droga: '',
-        presentacion: '',
-        familia: '',
-        ubicacion: '',
-        observaciones: '',
-        minStock: 0
-      });
+      // Recargar lista
+      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+      setMedicines(updatedList || []);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'medicines');
+      console.error(error);
+      alert('Error al agregar el medicamento.');
     }
   };
 
