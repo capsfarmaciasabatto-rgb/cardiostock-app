@@ -9,10 +9,6 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isSelectingRole, setIsSelectingRole] = useState(false);
-  const [pendingUser, setPendingUser] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
   const [medicines, setMedicines] = useState<Medicine[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterLowStock, setFilterLowStock] = useState(false);
@@ -38,10 +34,6 @@ export default function App() {
     setManualLogin(false);
   };
 
-  const isFarmaceutico = user?.role === 'FARMACEUTICO' || user?.email === 'capsfarmaciasabatto@gmail.com';
-  const isTecnico = isFarmaceutico || user?.role === 'TECNICO';
-  const isMedico = !!user;
-
   // Form states for new medicine
   const [newMedicine, setNewMedicine] = useState<Partial<Medicine>>({
     nombreComercial: '',
@@ -50,7 +42,7 @@ export default function App() {
     familia: '',
     ubicacion: '',
     observaciones: '',
-    minStock: 0
+    minStock: 0S
   });
 
 useEffect(() => {
