@@ -327,65 +327,76 @@ export default function App() {
   };
 
   // --- CRUD Medicamentos ---
-  const handleAddMedicine = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
+const handleAddMedicine = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!user) return;
+  
+  try {
+    const { error } = await supabase
+      .from('medicines')
+      .insert([{
+        droga: newMedicine.droga,
+        nombre_comercial: newMedicine.nombreComercial,
+        presentacion: newMedicine.presentacion,
+        familia: newMedicine.familia,
+        ubicacion: newMedicine.ubicacion,
+        min_stock: newMedicine.minStock || 0,
+        observaciones: newMedicine.observaciones,
+        stock_actual: 0
+      }]);
 
-    try {
-      const insertData = toSnakeCase({
-        ...newMedicine,
-        stockActual: 0
-      });
-
-      const { error } = await supabase
-        .from('medicines')
-        .insert([insertData]);
-
-      if (error) {
-        console.error('Error Supabase:', error);
-        throw error;
-      }
-
-      setShowAddMedicineModal(false);
-      setNewMedicine({
-        nombreComercial: '', droga: '', presentacion: '', familia: '', ubicacion: '', observaciones: '', minStock: 0
-      });
-
-      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines((updatedList || []).map(toCamelCase));
-      alert('Medicamento agregado correctamente');
-    } catch (error: any) {
-      console.error(error);
-      alert('Error al agregar el medicamento: ' + (error.message || 'Error desconocido'));
+    if (error) {
+      console.error('Error Supabase:', error);
+      alert('Error al agregar: ' + error.message);
+      return;
     }
-  };
 
-  const handleUpdateMedicine = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user || !editingMedicine) return;
-    try {
-      const updateData = toSnakeCase(editingMedicine);
-      delete (updateData as any).id;
-      delete (updateData as any).created_at;
+    setShowAddMedicineModal(false);
+    setNewMedicine({
+      nombreComercial: '', droga: '', presentacion: '', 
+      familia: '', ubicacion: '', observaciones: '', minStock: 0
+    });
+    
+    const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+    setMedicines(updatedList || []);
+    alert('Medicamento agregado correctamente');
+  } catch (error: any) {
+    console.error(error);
+    alert('Error: ' + (error.message || 'Error desconocido'));
+  }
+};
 
-      const { error } = await supabase
-        .from('medicines')
-        .update(updateData)
-        .eq('id', editingMedicine.id);
+const handleUpdateMedicine = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!user || !editingMedicine) return;
+  
+  try {
+    const { error } = await supabase
+      .from('medicines')
+      .update({
+        droga: editingMedicine.droga,
+        nombre_comercial: editingMedicine.nombreComercial,
+        presentacion: editingMedicine.presentacion,
+        familia: editingMedicine.familia,
+        ubicacion: editingMedicine.ubicacion,
+        min_stock: editingMedicine.minStock || 0,
+        observaciones: editingMedicine.observaciones
+      })
+      .eq('id', editingMedicine.id);
 
-      if (error) throw error;
-
-      setShowEditMedicineModal(false);
-      setEditingMedicine(null);
-
-      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines((updatedList || []).map(toCamelCase));
-      alert('Medicamento actualizado correctamente');
-    } catch (error: any) {
-      console.error(error);
-      alert('Error al actualizar: ' + (error.message || 'Error desconocido'));
-    }
-  };
+    if (error) throw error;
+    
+    setShowEditMedicineModal(false);
+    setEditingMedicine(null);
+    
+    const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+    setMedicines(updatedList || []);
+    alert('Medicamento actualizado correctamente');
+  } catch (error: any) {
+    console.error(error);
+    alert('Error al actualizar: ' + (error.message || 'Error desconocido'));
+  }
+};
 
   const handleUpdateBatch = async (batchId: string, quantity: number, vencimiento: string) => {
     if (!user || !selectedMedicine) return;
@@ -1924,47 +1935,52 @@ function UsersManager() {
     fetchUsers();
   }, []);
 
-  const handleCreateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newEmail) return;
+const handleCreateUser = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!newEmail) return;
 
-    try {
-      const cleanEmail = newEmail.toLowerCase().trim();
-      const userData = {
-        email: cleanEmail,
-        display_name: newDisplayName,
-        role: newRole,
-        access_code: newAccessCode,
-        approved: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
+  try {
+    const cleanEmail = newEmail.toLowerCase().trim();
+    const userData = {
+      email: cleanEmail,
+      display_name: newDisplayName,
+      role: newRole,
+      access_code: newAccessCode,
+      approved: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
 
-      const { error } = await supabase.from('users').insert(userData);
-      if (error) throw error;
-
-      setShowAddForm(false);
-      setNewEmail("");
-      setNewDisplayName("");
-      setNewRole("MEDICO");
-      setNewAccessCode("");
-
-      const { data } = await supabase.from('users').select('*').order('created_at', { ascending: false });
-      if (data) {
-        setUsers(data.map((u: any) => ({
-          uid: u.id,
-          email: u.email,
-          displayName: u.display_name,
-          role: u.role,
-          approved: u.approved,
-          accessCode: u.access_code
-        })));
-      }
-    } catch (error) {
+    const { error } = await supabase.from('users').insert(userData);
+    if (error) {
       console.error('Error creando usuario:', error);
-      alert('Error al crear usuario');
+      alert('Error al crear usuario: ' + error.message);
+      return;
     }
-  };
+    
+    setShowAddForm(false);
+    setNewEmail("");
+    setNewDisplayName("");
+    setNewRole("MEDICO");
+    setNewAccessCode("");
+    
+    const { data } = await supabase.from('users').select('*').order('created_at', { ascending: false });
+    if (data) {
+      setUsers(data.map((u: any) => ({
+        uid: u.id,
+        email: u.email,
+        displayName: u.display_name,
+        role: u.role,
+        approved: u.approved,
+        accessCode: u.access_code
+      })));
+    }
+    alert('Usuario creado correctamente');
+  } catch (error: any) {
+    console.error('Error creando usuario:', error);
+    alert('Error al crear usuario: ' + (error.message || 'Error desconocido'));
+  }
+};
 
   if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Cargando usuarios...</div>;
 
