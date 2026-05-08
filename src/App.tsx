@@ -8,13 +8,31 @@ import initialData from './data/inventory.json';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
+// ============================================================
+// TIPOS AUXILIARES
+// ============================================================
+type AppUser = {
+  uid: string;
+  email: string;
+  displayName: string | null;
+  role: UserRole;
+  approved: boolean;
+  accessCode?: string;
+};
+
+// ============================================================
+// COMPONENTE PRINCIPAL
+// ============================================================
 export default function App() {
+  // --- Estados principales ---
   const [medicines, setMedicines] = useState<Medicine[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterLowStock, setFilterLowStock] = useState(false);
   const [selectedMedicine, setSelectedMedicine] = useState<Medicine | null>(null);
   const [showMovementModal, setShowMovementModal] = useState(false);
   const [showAddMedicineModal, setShowAddMedicineModal] = useState(false);
+  const [showEditMedicineModal, setShowEditMedicineModal] = useState(false);
+  const [showEditBatchModal, setShowEditBatchModal] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showExpirationModal, setShowExpirationModal] = useState(false);
   const [showUsersModal, setShowUsersModal] = useState(false);
@@ -28,11 +46,13 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
 
-  const handleSignOut = () => {
-    signOut();
-    setUser(null);
-    setManualLogin(false);
-  };
+  // Estados de usuario
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [isSelectingRole, setIsSelectingRole] = useState(false);
+  const [pendingUser, setPendingUser] = useState<any>(null);
+  const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
+  const [editingBatch, setEditingBatch] = useState<Batch | null>(null);
 
   // Form states for new medicine
   const [newMedicine, setNewMedicine] = useState<Partial<Medicine>>({
@@ -42,13 +62,55 @@ export default function App() {
     familia: '',
     ubicacion: '',
     observaciones: '',
-    minStock: 0S
+    minStock: 0
   });
 
-useEffect(() => {
+  // --- Verificar sesión al cargar ---
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        await loadUserFromSupabase(session.user.email!);
+      }
+      setLoading(false);
+    };
+    checkSession();
 
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        loadUserFromSupabase(session.user.email!);
+      } else {
+        setUser(null);
+        setLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const loadUserFromSupabase = async (email: string) => {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email.toLowerCase().trim())
+      .single();
+
+    if (data && !error) {
+      setUser({
+        uid: data.id,
+        email: data.email,
+        displayName: data.display_name,
+        role: data.role,
+        approved: data.approved,
+        accessCode: data.access_code
+      });
+    }
+    setLoading(false);
+  };
+
+  // --- Cargar medicamentos ---
+  useEffect(() => {
     const fetchMedicines = async () => {
-      // Llamamos a la tabla que creaste en el SQL Editor
       const { data, error } = await supabase
         .from('medicines')
         .select('*')
@@ -60,9 +122,11 @@ useEffect(() => {
         setMedicines(data || []);
       }
     };
-
     fetchMedicines();
   }, []);
+
+  const isFarmaceutico = user?.role === 'FARMACEUTICO';
+  const isTecnico = user?.role === 'TECNICO' || user?.role === 'FARMACEUTICO';
 
   const filteredMedicines = useMemo(() => {
     const filtered = medicines.filter(m => {
@@ -70,9 +134,9 @@ useEffect(() => {
         m.droga.toLowerCase().includes(searchTerm.toLowerCase()) ||
         m.nombreComercial.toLowerCase().includes(searchTerm.toLowerCase()) ||
         m.familia.toLowerCase().includes(searchTerm.toLowerCase());
-      
+
       const isLowStock = filterLowStock ? (m.stockActual <= (m.minStock || 0)) : true;
-      
+
       return matchesSearch && isLowStock;
     });
 
@@ -84,31 +148,25 @@ useEffect(() => {
     });
   }, [medicines, searchTerm, filterLowStock, sortBy]);
 
-const handleSeedData = async () => {
+  const handleSeedData = async () => {
     if (isSeeding) return;
     setIsSeeding(true);
     try {
-      // Preparamos los datos del JSON inicial para Supabase
       const medicinesToInsert = initialData.map(item => ({
         droga: item.droga || '',
-        nombreComercial: item.nombreComercial || '',
+        nombre_comercial: item.nombreComercial || '',
         presentacion: item.presentacion || '',
         familia: item.familia || '',
         ubicacion: item.ubicacion || '',
-        stockActual: item.stockActual || 0,
-        minStock: 5
+        stock_actual: item.stockActual || 0,
+        min_stock: 5
       }));
 
-      const { error } = await supabase
-        .from('medicines')
-        .insert(medicinesToInsert);
-
+      const { error } = await supabase.from('medicines').insert(medicinesToInsert);
       if (error) throw error;
-      
+
       alert('¡Stock inicial cargado con éxito en Supabase!');
-      // Recargamos la página para ver los cambios
       window.location.reload();
-      
     } catch (error) {
       console.error(error);
       alert('Error al inicializar datos en Supabase.');
@@ -117,218 +175,110 @@ const handleSeedData = async () => {
     }
   };
 
-  const [showEditMedicineModal, setShowEditMedicineModal] = useState(false);
-  const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
-  const [editingBatch, setEditingBatch] = useState<Batch | null>(null);
-  const [showEditBatchModal, setShowEditBatchModal] = useState(false);
+  const handleSignIn = async () => {
+    setIsLoggingIn(true);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin }
+    });
+    if (error) {
+      console.error(error);
+      setIsLoggingIn(false);
+    }
+  };
 
-  const handleUpdateMedicine = async (e: React.FormEvent) => {
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setManualLogin(false);
+  };
+
+  const handleManualLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !editingMedicine) return;
-    try {
-      const { id, ...data } = editingMedicine as any;
-      // Actualizamos en Supabase buscando por la ID del medicamento
-      const { error } = await supabase
-        .from('medicines')
-        .update(data)
-        .eq('id', id);
+    setLoginError("");
+    setIsLoggingIn(true);
 
-      if (error) throw error;
-      
-      setShowEditMedicineModal(false);
-      setEditingMedicine(null);
-      
-      // Refrescamos la lista para ver los cambios en la tabla
-      const { data: updatedList } = await supabase
-        .from('medicines')
+    if (loginPassword === '1234') {
+      setUser({
+        uid: 'admin-manual',
+        email: loginEmail || 'capsfarmaciasabatto@gmail.com',
+        displayName: 'Administrador Local',
+        role: 'FARMACEUTICO',
+        approved: true
+      });
+      setIsLoggingIn(false);
+      return;
+    }
+
+    try {
+      const cleanEmail = loginEmail.toLowerCase().trim();
+      const { data, error } = await supabase
+        .from('users')
         .select('*')
-        .order('droga', { ascending: true });
-      setMedicines(updatedList || []);
-      
-    } catch (error) {
-      console.error(error);
-      alert('Error al actualizar el medicamento en Supabase.');
-    }
-  };
+        .eq('email', cleanEmail)
+        .single();
 
-  const handleUpdateBatch = async (batchId: string, quantity: number, vencimiento: string) => {
-    if (!user || !selectedMedicine) return;
-    try {
-      // Actualizamos directamente el stock y vencimiento en la tabla medicines
-      const { error } = await supabase
-        .from('medicines')
-        .update({ 
-          stockActual: quantity, 
-          fechaVencimiento: vencimiento 
-        })
-        .eq('id', selectedMedicine.id);
-
-      if (error) throw error;
-      
-      setShowEditBatchModal(false);
-      setEditingBatch(null);
-      
-      // Refrescamos la lista para ver el nuevo stock
-      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines(updatedList || []);
-      
-    } catch (error) {
-      console.error(error);
-      alert('Error al actualizar el stock en Supabase.');
-    }
-  };
-
-  const handleAddMedicine = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-    
-    // Suponiendo que tenés un estado 'newMedicine' con los datos del formulario
-    try {
-      const { error } = await supabase
-        .from('medicines')
-        .insert([newMedicine]);
-
-      if (error) throw error;
-
-      setShowAddMedicineModal(false);
-      // Recargar lista
-      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines(updatedList || []);
-    } catch (error) {
-      console.error(error);
-      alert('Error al agregar el medicamento.');
-    }
-  };
-
-  const registerMovement = async (type: MovementType, quantity: number, expiry?: string, isAdjustment?: boolean, justification?: string) => {
-    if (!user || !selectedMedicine) return;
-    if (quantity <= 0) return;
-
-    try {
-      const batch = writeBatch(db);
-      const medicineRef = doc(db, 'medicines', selectedMedicine.id);
-      
-      const movementRef = doc(collection(medicineRef, 'movements'));
-      const globalMovementRef = doc(collection(db, 'global_movements'));
-      
-      const movementData = {
-        medicineId: selectedMedicine.id,
-        medicineName: selectedMedicine.droga,
-        medicineComercialName: selectedMedicine.nombreComercial,
-        type,
-        quantity,
-        reason: isAdjustment ? 'Ajuste manual' : 'Registro manual',
-        isAdjustment: isAdjustment || false,
-        justification: justification || '',
-        createdAt: serverTimestamp(),
-        userId: user.uid,
-        userEmail: user.email,
-        userName: user.displayName || user.email
-      };
-
-      batch.set(movementRef, movementData);
-      batch.set(globalMovementRef, movementData);
-
-      if (type === 'ingreso') {
-        if (!expiry) {
-          alert('Debe ingresar una fecha de vencimiento para el ingreso');
-          return;
-        }
-
-        const batchesRef = collection(medicineRef, 'batches');
-        const q = query(batchesRef, where('vencimiento', '==', expiry));
-        const batchSnap = await getDocs(q);
-
-        if (!batchSnap.empty) {
-          const existingBatchDoc = batchSnap.docs[0];
-          batch.update(existingBatchDoc.ref, {
-            quantity: existingBatchDoc.data().quantity + quantity,
-            updatedAt: serverTimestamp()
-          });
-        } else {
-          const newBatchRef = doc(batchesRef);
-          batch.set(newBatchRef, {
-            vencimiento: expiry,
-            quantity: quantity,
-            updatedAt: serverTimestamp()
-          });
-        }
-
-        batch.update(medicineRef, {
-          stockActual: selectedMedicine.stockActual + quantity,
-          updatedAt: serverTimestamp()
-        });
-      } else {
-        if (selectedMedicine.stockActual < quantity) {
-          alert('No hay stock suficiente');
-          return;
-        }
-
-        const batchesRef = collection(medicineRef, 'batches');
-        const q = query(batchesRef, where('quantity', '>', 0), orderBy('vencimiento', 'asc'));
-        const batchSnap = await getDocs(q);
-        
-        let remainingToDeduct = quantity;
-        const batchDocs = batchSnap.docs;
-
-        for (const bDoc of batchDocs) {
-          if (remainingToDeduct === 0) break;
-          const bData = bDoc.data();
-          const bQty = bData.quantity;
-
-          if (bQty <= remainingToDeduct) {
-            batch.update(bDoc.ref, {
-              quantity: 0,
-              updatedAt: serverTimestamp()
-            });
-            remainingToDeduct -= bQty;
-          } else {
-            batch.update(bDoc.ref, {
-              quantity: bQty - remainingToDeduct,
-              updatedAt: serverTimestamp()
-            });
-            remainingToDeduct = 0;
-          }
-        }
-
-        batch.update(medicineRef, {
-          stockActual: selectedMedicine.stockActual - quantity,
-          updatedAt: serverTimestamp()
-        });
+      if (error || !data) {
+        setLoginError("Usuario no encontrado.");
+        setIsLoggingIn(false);
+        return;
       }
 
-      await batch.commit();
-      setShowMovementModal(false);
-      setTimeout(() => setSelectedMedicine(null), 200);
+      if (data.access_code === loginPassword) {
+        if (!data.approved && data.email !== 'capsfarmaciasabatto@gmail.com') {
+          setLoginError("Usuario pendiente de aprobación.");
+          setIsLoggingIn(false);
+          return;
+        }
+
+        setUser({
+          uid: data.id,
+          email: data.email,
+          displayName: data.display_name || data.email,
+          role: data.role,
+          approved: true,
+          accessCode: data.access_code
+        });
+      } else {
+        setLoginError("Código de acceso incorrecto.");
+      }
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `medicines/${selectedMedicine.id}`);
+      console.error("Login error:", error);
+      setLoginError("Error al intentar iniciar sesión.");
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
   const handleSelectRole = async (role: UserRole) => {
     if (!pendingUser) return;
     try {
-      const userRef = doc(db, 'users', pendingUser.uid);
-      const isFirstUser = (await getDocs(collection(db, 'users'))).empty;
-      
+      const { data: existingUsers } = await supabase.from('users').select('id');
+      const isFirstUser = !existingUsers || existingUsers.length === 0;
+
       const userData = {
         email: pendingUser.email,
-        displayName: pendingUser.displayName,
+        display_name: pendingUser.displayName,
         role: role,
-        approved: isFirstUser || role === 'FARMACEUTICO' ? true : false, // First user or pharmacists are auto-approved for simplicity in this prototype, or we could require approval for everyone
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        approved: isFirstUser || role === 'FARMACEUTICO',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       };
 
-      await setDoc(userRef, userData);
-      
+      const { data, error } = await supabase
+        .from('users')
+        .insert(userData)
+        .select()
+        .single();
+
+      if (error) throw error;
+
       setUser({
-        uid: pendingUser.uid,
-        email: pendingUser.email,
-        displayName: pendingUser.displayName,
-        photoURL: pendingUser.photoURL,
-        role: role,
-        approved: userData.approved
+        uid: data.id,
+        email: data.email,
+        displayName: data.display_name,
+        role: data.role,
+        approved: data.approved
       });
       setIsSelectingRole(false);
     } catch (error) {
@@ -337,6 +287,184 @@ const handleSeedData = async () => {
     }
   };
 
+  const handleAddMedicine = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+
+    try {
+      const { error } = await supabase
+        .from('medicines')
+        .insert([{
+          droga: newMedicine.droga,
+          nombre_comercial: newMedicine.nombreComercial,
+          presentacion: newMedicine.presentacion,
+          familia: newMedicine.familia,
+          ubicacion: newMedicine.ubicacion,
+          min_stock: newMedicine.minStock || 0,
+          observaciones: newMedicine.observaciones,
+          stock_actual: 0
+        }]);
+
+      if (error) throw error;
+      setShowAddMedicineModal(false);
+
+      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+      setMedicines(updatedList || []);
+    } catch (error) {
+      console.error(error);
+      alert('Error al agregar el medicamento.');
+    }
+  };
+
+  const handleUpdateMedicine = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !editingMedicine) return;
+    try {
+      const { error } = await supabase
+        .from('medicines')
+        .update({
+          droga: editingMedicine.droga,
+          nombre_comercial: editingMedicine.nombreComercial,
+          presentacion: editingMedicine.presentacion,
+          familia: editingMedicine.familia,
+          ubicacion: editingMedicine.ubicacion,
+          min_stock: editingMedicine.minStock || 0,
+          observaciones: editingMedicine.observaciones
+        })
+        .eq('id', editingMedicine.id);
+
+      if (error) throw error;
+
+      setShowEditMedicineModal(false);
+      setEditingMedicine(null);
+
+      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+      setMedicines(updatedList || []);
+    } catch (error) {
+      console.error(error);
+      alert('Error al actualizar el medicamento.');
+    }
+  };
+
+  const handleUpdateBatch = async (batchId: string, quantity: number, vencimiento: string) => {
+    if (!user || !selectedMedicine) return;
+    try {
+      const { error } = await supabase
+        .from('medicines')
+        .update({ 
+          stock_actual: quantity, 
+          fecha_vencimiento: vencimiento 
+        })
+        .eq('id', selectedMedicine.id);
+
+      if (error) throw error;
+
+      setShowEditBatchModal(false);
+      setEditingBatch(null);
+
+      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+      setMedicines(updatedList || []);
+    } catch (error) {
+      console.error(error);
+      alert('Error al actualizar el stock.');
+    }
+  };
+
+  const registerMovement = async (
+    type: MovementType, 
+    quantity: number, 
+    expiry?: string, 
+    isAdjustment?: boolean, 
+    justification?: string
+  ) => {
+    if (!user || !selectedMedicine) return;
+    if (quantity <= 0) return;
+
+    try {
+      const { error: movError } = await supabase.from('movements').insert({
+        medicine_id: selectedMedicine.id,
+        type,
+        quantity,
+        reason: isAdjustment ? 'Ajuste manual' : 'Registro manual',
+        is_adjustment: isAdjustment || false,
+        justification: justification || '',
+        user_email: user.email,
+        user_name: user.displayName || user.email
+      });
+
+      if (movError) throw movError;
+
+      let newStock = selectedMedicine.stockActual;
+      if (type === 'ingreso') {
+        if (!expiry) {
+          alert('Debe ingresar una fecha de vencimiento para el ingreso');
+          return;
+        }
+        newStock += quantity;
+
+        const { data: existingBatches } = await supabase
+          .from('batches')
+          .select('*')
+          .eq('medicine_id', selectedMedicine.id)
+          .eq('vencimiento', expiry);
+
+        if (existingBatches && existingBatches.length > 0) {
+          await supabase
+            .from('batches')
+            .update({ quantity: existingBatches[0].quantity + quantity })
+            .eq('id', existingBatches[0].id);
+        } else {
+          await supabase.from('batches').insert({
+            medicine_id: selectedMedicine.id,
+            vencimiento: expiry,
+            quantity: quantity
+          });
+        }
+      } else {
+        if (selectedMedicine.stockActual < quantity) {
+          alert('No hay stock suficiente');
+          return;
+        }
+        newStock -= quantity;
+
+        const { data: batches } = await supabase
+          .from('batches')
+          .select('*')
+          .eq('medicine_id', selectedMedicine.id)
+          .gt('quantity', 0)
+          .order('vencimiento', { ascending: true });
+
+        if (batches) {
+          let remainingToDeduct = quantity;
+          for (const batch of batches) {
+            if (remainingToDeduct === 0) break;
+            if (batch.quantity <= remainingToDeduct) {
+              await supabase.from('batches').update({ quantity: 0 }).eq('id', batch.id);
+              remainingToDeduct -= batch.quantity;
+            } else {
+              await supabase.from('batches').update({ quantity: batch.quantity - remainingToDeduct }).eq('id', batch.id);
+              remainingToDeduct = 0;
+            }
+          }
+        }
+      }
+
+      await supabase.from('medicines').update({ stock_actual: newStock }).eq('id', selectedMedicine.id);
+
+      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+      setMedicines(updatedList || []);
+
+      setShowMovementModal(false);
+      setTimeout(() => setSelectedMedicine(null), 200);
+    } catch (error) {
+      console.error('Error en movimiento:', error);
+      alert('Error al registrar el movimiento.');
+    }
+  };
+
+  // ============================================================
+  // RENDER: LOADING
+  // ============================================================
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-200 flex items-center justify-center font-sans text-orange-600 font-black animate-pulse">
@@ -345,6 +473,9 @@ const handleSeedData = async () => {
     );
   }
 
+  // ============================================================
+  // RENDER: SELECCIÓN DE ROL
+  // ============================================================
   if (isSelectingRole && pendingUser) {
     return (
       <div className="min-h-screen bg-slate-200 flex items-center justify-center p-6 font-sans">
@@ -353,7 +484,7 @@ const handleSeedData = async () => {
              <h2 className="text-4xl font-black text-slate-800 mb-2 uppercase tracking-tight">Elija su Perfil</h2>
              <p className="text-slate-500 font-medium italic">Seleccione su rol para continuar al sistema</p>
           </div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
              <RoleCard 
                 title="Médico" 
@@ -394,67 +525,15 @@ const handleSeedData = async () => {
     );
   }
 
-const handleManualLogin = async (e: React.FormEvent) => {
-  e.preventDefault();
-  setLoginError(null);
-  setIsLoggingIn(true);
-
-  // --- ACCESO CON CONTRASEÑA GENÉRICA ---
-  if (loginPassword === '1234') {
-    setUser({
-      uid: 'admin-manual',
-      email: loginEmail || 'capsfarmaciasabatto@gmail.com',
-      displayName: 'Administrador Local',
-      role: 'FARMACEUTICO',
-      approved: true
-    });
-    setIsLoggingIn(false);
-    return;
-  }
-    try {
-      const cleanEmail = loginEmail.toLowerCase().trim();
-      // Use the same predictable ID format as in handleCreateUser
-      const tempId = `pre_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const userSnap = await getDoc(doc(db, 'users', tempId));
-      
-      if (userSnap.exists()) {
-        const userData = userSnap.data();
-        
-        // Verify access code
-        if (userData.accessCode === loginPassword) {
-          if (!userData.approved && userData.email !== 'capsfarmaciasabatto@gmail.com') {
-            setLoginError("Usuario pendiente de aprobación.");
-            setIsLoggingIn(false);
-            return;
-          }
-
-          setUser({
-            uid: userSnap.id,
-            email: userData.email,
-            displayName: userData.displayName || userData.email,
-            photoURL: null,
-            role: userData.role,
-            approved: true,
-            accessCode: userData.accessCode
-          });
-          setIsSelectingRole(false);
-        } else {
-          setLoginError("Código de acceso incorrecto.");
-          setIsLoggingIn(false);
-        }
-      } else {
-        setLoginError("Usuario no encontrado.");
-        setIsLoggingIn(false);
-      }
-    } catch (error) {
-      console.error("Login error:", error);
-      setLoginError("Error al intentar iniciar sesión.");
-      setIsLoggingIn(false);
-    }
-  };
-
+  // ============================================================
+  // RENDER: LOGIN
+  // ============================================================
   if (!user) {
-    if (isLoggingIn || pendingUser) return <div className="min-h-screen bg-slate-200 flex items-center justify-center font-black text-slate-400 uppercase tracking-widest text-xs animate-pulse">Iniciando sistema...</div>;
+    if (isLoggingIn || pendingUser) return (
+      <div className="min-h-screen bg-slate-200 flex items-center justify-center font-black text-slate-400 uppercase tracking-widest text-xs animate-pulse">
+        Iniciando sistema...
+      </div>
+    );
 
     return (
       <div className="min-h-screen bg-slate-200 flex flex-col items-center justify-center p-4 font-sans text-slate-800">
@@ -464,13 +543,13 @@ const handleManualLogin = async (e: React.FormEvent) => {
           className="max-w-md w-full bg-white rounded-[4rem] shadow-2xl p-12 text-center border-4 border-white relative overflow-hidden ring-1 ring-slate-200"
         >
           <div className="absolute top-0 right-0 w-32 h-32 bg-orange-50 rounded-full -mr-16 -mt-16 blur-2xl opacity-50" />
-          
+
           <div className="w-24 h-24 bg-slate-50 rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-sm">
             <HeartPulse className="text-orange-500 w-12 h-12" />
           </div>
           <h1 className="text-5xl font-black text-slate-800 mb-2 uppercase tracking-tighter">SABATTO</h1>
           <p className="text-orange-500 font-black uppercase tracking-[0.2em] text-[10px] mb-4">Farmacia Especializada</p>
-          
+
           <AnimatePresence mode="wait">
             {!manualLogin ? (
               <motion.div
@@ -550,16 +629,30 @@ const handleManualLogin = async (e: React.FormEvent) => {
     );
   }
 
-if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && user.uid !== 'admin-manual') {
-  return (
-    <div className="min-h-screen bg-slate-200 flex flex-col items-center justify-center p-4 font-sans text-center">
-      {/* ... todo el diseño de Acceso Pendiente ... */}
-    </div>
-  );
-}
+  // ============================================================
+  // RENDER: PENDIENTE DE APROBACIÓN
+  // ============================================================
+  if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && user.uid !== 'admin-manual') {
+    return (
+      <div className="min-h-screen bg-slate-200 flex flex-col items-center justify-center p-4 font-sans text-center">
+        <div className="max-w-md w-full bg-white rounded-[3rem] shadow-2xl p-12">
+          <AlertCircle size={48} className="text-amber-500 mx-auto mb-6" />
+          <h2 className="text-2xl font-black text-slate-800 mb-4 uppercase">Acceso Pendiente</h2>
+          <p className="text-slate-500 font-medium mb-8">Su cuenta está esperando aprobación del administrador. Contacte al farmacéutico a cargo.</p>
+          <button onClick={handleSignOut} className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black">
+            Cerrar Sesión
+          </button>
+        </div>
+      </div>
+    );
+  }
 
+  // ============================================================
+  // RENDER: APP PRINCIPAL
+  // ============================================================
   return (
     <div className="min-h-screen bg-slate-200 text-slate-900 font-sans pb-20">
+      {/* HEADER */}
       <header className="sticky top-0 z-40 bg-white shadow-md border-b border-white px-4 py-4 md:px-8">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -601,6 +694,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
         </div>
       </header>
 
+      {/* MAIN CONTENT */}
       <main className="max-w-7xl mx-auto px-4 pt-10 md:px-8">
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 mb-10">
           <div>
@@ -613,12 +707,9 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
                 <button 
                   onClick={() => {
                     const doc = new jsPDF();
-                    
-                    // Header
                     doc.setFontSize(22);
                     doc.setTextColor(30, 41, 59);
                     doc.text("Farmacia Sabatto", 14, 20);
-                    
                     doc.setFontSize(12);
                     doc.setTextColor(100, 116, 139);
                     doc.text("Informe de Inventario Actual", 14, 28);
@@ -641,7 +732,6 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
                       headStyles: { fillColor: [30, 41, 59], fontStyle: 'bold' },
                       styles: { fontSize: 9 }
                     });
-
                     doc.save(`inventario_${new Date().toISOString().split('T')[0]}.pdf`);
                   }}
                   className="bg-slate-900 text-white px-6 py-4 rounded-2xl font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg"
@@ -689,6 +779,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
           </div>
         </div>
 
+        {/* BARRA DE BÚSQUEDA */}
         <div className="bg-white p-4 rounded-[3rem] shadow-xl border-2 border-white ring-1 ring-orange-100 mb-10 flex gap-4 items-center">
             <Search className="ml-5 text-orange-400" size={24} />
             <input 
@@ -756,6 +847,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
             </div>
         </div>
 
+        {/* GRID VIEW */}
         {viewType === 'grid' ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             <AnimatePresence mode="popLayout">
@@ -831,6 +923,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
             </AnimatePresence>
           </div>
         ) : (
+          /* LIST VIEW */
           <div className="bg-white rounded-[3rem] shadow-xl border-4 border-white ring-1 ring-slate-200 overflow-hidden">
              <div className="grid grid-cols-12 gap-4 px-8 py-6 border-b border-slate-100 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
                 <div className="col-span-5">Droga / Marca</div>
@@ -891,7 +984,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
         )}
       </main>
 
-      {/* Movement Modal */}
+      {/* MOVEMENT MODAL */}
       <AnimatePresence>
         {showMovementModal && selectedMedicine && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -947,7 +1040,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
         )}
       </AnimatePresence>
 
-      {/* Add Medicine Modal */}
+      {/* ADD MEDICINE MODAL */}
       <AnimatePresence>
         {showAddMedicineModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -964,7 +1057,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
                   label="Stock Mínimo (Alerta)" 
                   type="number"
                   value={newMedicine.minStock} 
-                  onChange={v => setNewMedicine({...newMedicine, minStock: v})} 
+                  onChange={v => setNewMedicine({...newMedicine, minStock: parseInt(v) || 0})} 
                 />
                 <div className="sm:col-span-2">
                   <InputGroup label="Observaciones" value={newMedicine.observaciones} onChange={v => setNewMedicine({...newMedicine, observaciones: v})} />
@@ -979,7 +1072,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
         )}
       </AnimatePresence>
 
-      {/* Edit Medicine Modal */}
+      {/* EDIT MEDICINE MODAL */}
       <AnimatePresence>
         {showEditMedicineModal && editingMedicine && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -996,7 +1089,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
                   label="Stock Mínimo (Alerta)" 
                   type="number"
                   value={editingMedicine.minStock} 
-                  onChange={v => setEditingMedicine({...editingMedicine, minStock: parseInt(v as any) || 0})} 
+                  onChange={v => setEditingMedicine({...editingMedicine, minStock: parseInt(v) || 0})} 
                 />
                 <div className="sm:col-span-2">
                   <InputGroup label="Observaciones" value={editingMedicine.observaciones} onChange={v => setEditingMedicine({...editingMedicine, observaciones: v})} />
@@ -1011,7 +1104,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
         )}
       </AnimatePresence>
 
-      {/* Edit Batch Modal */}
+      {/* EDIT BATCH MODAL */}
       <AnimatePresence>
         {showEditBatchModal && editingBatch && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1052,7 +1145,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
         )}
       </AnimatePresence>
 
-      {/* Expiration Alerts Modal */}
+      {/* EXPIRATION MODAL */}
       <AnimatePresence>
         {showExpirationModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1078,7 +1171,7 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
         )}
       </AnimatePresence>
 
-      {/* Audit Modal */}
+      {/* AUDIT MODAL */}
       <AnimatePresence>
         {showAuditModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1094,7 +1187,10 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
             </motion.div>
           </div>
         )}
+      </AnimatePresence>
 
+      {/* USERS MODAL */}
+      <AnimatePresence>
         {showUsersModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => setShowUsersModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" />
@@ -1123,12 +1219,426 @@ if (user && !user.approved && user.email !== 'capsfarmaciasabatto@gmail.com' && 
   );
 }
 
+// ============================================================
+// COMPONENTES AUXILIARES
+// ============================================================
+
+function RoleCard({ title, icon, description, color, textColor, onClick }: any) {
+  return (
+    <motion.button
+      whileHover={{ y: -10, scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+      onClick={onClick}
+      className={cn(
+        "p-10 rounded-[4rem] border-4 border-white ring-1 ring-slate-200 shadow-xl transition-all text-left flex flex-col h-full group",
+        color
+      )}
+    >
+      <div className={cn("p-5 rounded-3xl mb-8 w-fit transition-transform group-hover:scale-110", textColor, "bg-opacity-10", roleIconBg(textColor))}>
+         {icon}
+      </div>
+      <h3 className={cn("text-2xl font-black mb-4 uppercase tracking-tight", textColor)}>{title}</h3>
+      <p className={cn("text-sm font-medium leading-relaxed opacity-60 flex-1", textColor)}>
+        {description}
+      </p>
+      <div className={cn("mt-10 flex items-center gap-2 font-black uppercase tracking-widest text-[10px]", textColor)}>
+        <span>Seleccionar Perfil</span>
+        <Plus size={12} className="transition-transform group-hover:rotate-90" />
+      </div>
+    </motion.button>
+  );
+}
+
+function roleIconBg(textColor: string) {
+  if (textColor.includes('white')) return 'bg-white';
+  if (textColor.includes('orange')) return 'bg-orange-600';
+  return 'bg-slate-800';
+}
+
+function InputGroup({ label, value, onChange, placeholder, required, type = "text" }: any) {
+  return (
+    <div className="space-y-2">
+      <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">{label}</label>
+      <input 
+        required={required}
+        type={type}
+        value={value ?? ''}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full bg-slate-100 border-none rounded-2xl px-5 py-4 font-bold text-slate-700 focus:ring-2 focus:ring-orange-500 outline-none shadow-inner"
+      />
+    </div>
+  );
+}
+
+function MovementForm({ type, title, onConfirm }: { type: MovementType, title: string, onConfirm: (q: number, e?: string, isAdj?: boolean, just?: string) => void }) {
+  const [quantity, setQuantity] = useState("1");
+  const [expiryMonth, setExpiryMonth] = useState(new Date().getMonth() + 1);
+  const [expiryYear, setExpiryYear] = useState(new Date().getFullYear());
+  const [isAdjustment, setIsAdjustment] = useState(false);
+  const [justification, setJustification] = useState("");
+  const isIngreso = type === 'ingreso';
+
+  const months = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+  ];
+
+  const handleConfirm = () => {
+    const q = parseInt(quantity);
+    if (isNaN(q) || q <= 0) {
+      alert("Ingrese una cantidad válida");
+      return;
+    }
+
+    if (isIngreso) {
+      const formattedMonth = expiryMonth.toString().padStart(2, '0');
+      const expiry = `${expiryYear}-${formattedMonth}`;
+      onConfirm(q, expiry, isAdjustment, justification);
+    } else {
+      onConfirm(q, undefined, isAdjustment, justification);
+    }
+  };
+
+  return (
+    <div className={cn("p-8 rounded-[3rem] border-4 shadow-xl border-white ring-1 ring-slate-100", isIngreso ? "bg-orange-50/40" : "bg-amber-50/40")}>
+      <h4 className={cn("text-xs font-black uppercase tracking-widest mb-6", isIngreso ? "text-orange-600" : "text-amber-600")}>{title}</h4>
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Cantidad</label>
+          <div className="flex items-center gap-3">
+              <button type="button" onClick={() => setQuantity(q => Math.max(1, parseInt(q || "0") - 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform"><Minus size={16} /></button>
+              <input type="number" value={quantity ?? ''} onChange={e => setQuantity(e.target.value)} className="flex-1 bg-white rounded-xl py-3 text-center font-black text-lg focus:outline-none shadow-sm" />
+              <button type="button" onClick={() => setQuantity(q => (parseInt(q || "0") + 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform"><Plus size={16} /></button>
+          </div>
+        </div>
+
+        {isIngreso && (
+          <div className="space-y-2">
+            <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Vencimiento (Mes / Año)</label>
+            <div className="flex gap-2">
+              <select 
+                value={expiryMonth ?? 1} 
+                onChange={e => setExpiryMonth(parseInt(e.target.value))}
+                className="flex-[2] bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 outline-none"
+              >
+                {months.map((m, i) => (
+                  <option key={m} value={i + 1}>{m}</option>
+                ))}
+              </select>
+              <input 
+                type="number" 
+                placeholder="Año"
+                value={expiryYear ?? new Date().getFullYear()}
+                onChange={e => setExpiryYear(parseInt(e.target.value))}
+                className="flex-1 bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 text-center outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="pt-2">
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <div className={cn(
+              "w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all",
+              isAdjustment ? "bg-red-500 border-red-500 text-white" : "border-slate-200 bg-white group-hover:border-slate-300"
+            )} onClick={() => setIsAdjustment(!isAdjustment)}>
+              {isAdjustment && <X size={14} className="stroke-[4]" />}
+            </div>
+            <span className="text-[10px] uppercase font-black tracking-widest text-slate-500">¿Es un ajuste de inventario?</span>
+          </label>
+        </div>
+
+        {isAdjustment && (
+          <div className="space-y-2">
+            <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Justificación del ajuste</label>
+            <textarea 
+              value={justification}
+              onChange={e => setJustification(e.target.value)}
+              placeholder="Ej: Faltante detectado, rotura, sobra de stock..."
+              className="w-full bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-red-400 outline-none min-h-[80px]"
+            />
+          </div>
+        )}
+
+        <button onClick={handleConfirm} className={cn("w-full py-4 rounded-2xl font-black text-white shadow-lg transition-all active:scale-95 mt-2", isIngreso ? "bg-orange-500 shadow-orange-50 hover:bg-orange-600" : "bg-amber-500 shadow-amber-50 hover:bg-amber-600")}>
+          Confirmar {isAdjustment ? 'AJUSTE' : (isIngreso ? 'Ingreso' : 'Dispensa')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BatchList({ medicineId, isAdmin, onEdit }: { medicineId: string, isAdmin?: boolean, onEdit?: (b: Batch) => void }) {
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchBatches = async () => {
+      const { data, error } = await supabase
+        .from('batches')
+        .select('*')
+        .eq('medicine_id', medicineId)
+        .gt('quantity', 0)
+        .order('vencimiento', { ascending: true });
+
+      if (!error && data) {
+        setBatches(data);
+      }
+      setLoading(false);
+    };
+    fetchBatches();
+  }, [medicineId]);
+
+  if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Cargando lotes...</div>;
+
+  return (
+    <div className="space-y-4">
+      {batches.length > 0 ? batches.map(b => (
+        <div key={b.id} className="bg-slate-50 p-6 rounded-[2rem] border-2 border-white shadow-sm flex items-center justify-between group hover:bg-white hover:shadow-md transition-all">
+          <div className="flex items-center gap-4">
+             <Calendar size={18} className="text-amber-500" />
+             <div>
+               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Vencimiento</p>
+               <p className="font-bold text-slate-700 leading-none">{b.vencimiento}</p>
+             </div>
+          </div>
+          <div className="flex items-center gap-6">
+            <div className="text-right">
+               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Stock</p>
+               <p className="font-black text-orange-600 text-lg leading-none">{b.quantity}</p>
+            </div>
+            {isAdmin && (
+              <button 
+                onClick={() => onEdit?.(b)}
+                className="bg-slate-50 p-2 rounded-xl text-slate-400 hover:text-orange-500 hover:bg-orange-50 transition-all opacity-0 group-hover:opacity-100"
+              >
+                <Plus size={16} className="rotate-45" />
+              </button>
+            )}
+          </div>
+        </div>
+      )) : (
+        <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">Sin stock por lotes</div>
+      )}
+    </div>
+  );
+}
+
+function ExpirationAlerts({ medicines }: { medicines: Medicine[] }) {
+  const [allBatches, setAllBatches] = useState<(Batch & { medicine: Medicine })[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchAll = async () => {
+      const results: (Batch & { medicine: Medicine })[] = [];
+
+      for (const m of medicines) {
+        const { data: snap } = await supabase
+          .from('batches')
+          .select('*')
+          .eq('medicine_id', m.id)
+          .gt('quantity', 0);
+
+        if (snap) {
+          snap.forEach((d: any) => {
+            results.push({ ...d, medicine: m } as any);
+          });
+        }
+      }
+
+      if (isMounted) {
+        const sorted = results.sort((a, b) => a.vencimiento.localeCompare(b.vencimiento));
+        const ninetyDaysFromNow = new Date();
+        ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90);
+        const limitStr = ninetyDaysFromNow.toISOString().substring(0, 7);
+        const upcoming = sorted.filter(b => b.vencimiento <= limitStr);
+        setAllBatches(upcoming);
+        setLoading(false);
+      }
+    };
+
+    fetchAll();
+    return () => { isMounted = false; };
+  }, [medicines]);
+
+  if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Analizando fechas de vencimiento...</div>;
+
+  return (
+    <div className="space-y-4">
+      {allBatches.length > 0 ? allBatches.map(b => {
+        const isExpired = b.vencimiento <= new Date().toISOString().substring(0, 7);
+        return (
+          <div key={`${b.medicine.id}-${b.id}`} className={cn(
+            "p-8 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-xl",
+            isExpired ? "bg-red-50" : "bg-amber-50/50"
+          )}>
+            <div className="flex items-center gap-4">
+               <div className={cn("p-3 rounded-2xl", isExpired ? "bg-red-100 text-red-600" : "bg-amber-100 text-amber-600")}>
+                 <Calendar size={20} />
+               </div>
+               <div>
+                 <p className="text-xs font-black text-slate-800 uppercase leading-none mb-1">{b.medicine.droga}</p>
+                 <p className="text-[10px] font-bold text-slate-400 italic mb-1">{b.medicine.nombreComercial}</p>
+                 <div className="flex items-center gap-2">
+                    <span className={cn("text-[10px] font-black uppercase px-2 py-0.5 rounded", isExpired ? "bg-red-600 text-white" : "bg-amber-500 text-white")}>
+                      {isExpired ? 'VENCIDO' : 'PRÓXIMO'}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-500">Lote: {b.id.substring(0, 8)}</span>
+                 </div>
+               </div>
+            </div>
+
+            <div className="flex-1 md:text-center">
+               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Vencimiento</p>
+               <p className={cn("font-black text-lg", isExpired ? "text-red-600" : "text-amber-600")}>{b.vencimiento}</p>
+            </div>
+
+            <div className="text-right">
+               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Stock en Lote</p>
+               <p className="font-black text-slate-700 text-lg leading-none">{b.quantity}</p>
+            </div>
+          </div>
+        );
+      }) : (
+        <div className="py-20 text-center">
+          <div className="w-16 h-16 bg-orange-50 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Package size={32} />
+          </div>
+          <p className="text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay vencimientos próximos detectados</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuditLog() {
+  const [movements, setMovements] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchMovements = async () => {
+      const { data, error } = await supabase
+        .from('movements')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        setMovements(data);
+      }
+      setLoading(false);
+    };
+    fetchMovements();
+  }, []);
+
+  if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Cargando auditoría...</div>;
+
+  const exportMovements = () => {
+    if (movements.length === 0) return;
+
+    const doc = new jsPDF();
+    doc.setFontSize(22);
+    doc.setTextColor(30, 41, 59);
+    doc.text("Farmacia Sabatto", 14, 20);
+    doc.setFontSize(14);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Informe de Auditoría de Movimientos", 14, 28);
+    doc.setFontSize(10);
+    doc.text(`Fecha de emisión: ${new Date().toLocaleString()}`, 14, 36);
+
+    const tableData = movements.map(m => [
+      m.created_at ? new Date(m.created_at).toLocaleString() : '',
+      m.medicine_id,
+      `${m.type === 'ingreso' ? 'INGRESO' : 'DISPENSA'}${m.is_adjustment ? ' (AJUSTE)' : ''}`,
+      m.quantity.toString(),
+      `${m.user_email || m.user_name}${m.justification ? `\nJustif: ${m.justification}` : ''}`
+    ]);
+
+    autoTable(doc, {
+      startY: 45,
+      head: [["Fecha", "Medicamento", "Tipo", "Cant.", "Usuario / Justif."]],
+      body: tableData,
+      theme: 'grid',
+      headStyles: { fillColor: [30, 41, 59], fontStyle: 'bold' },
+      styles: { fontSize: 8, cellPadding: 2 },
+      columnStyles: {
+        0: { cellWidth: 35 },
+        1: { cellWidth: 40 },
+        2: { cellWidth: 25 },
+        3: { cellWidth: 15 },
+        4: { cellWidth: 'auto' }
+      }
+    });
+
+    doc.save(`auditoria_movimientos_${new Date().toISOString().split('T')[0]}.pdf`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end mb-4">
+        <button 
+          onClick={exportMovements}
+          className="bg-slate-900 text-white px-6 py-3 rounded-2xl font-bold flex items-center gap-2 hover:bg-slate-800 transition-all text-sm"
+        >
+          <FileText size={18} />
+          Exportar PDF Auditoría
+        </button>
+      </div>
+      {movements.length > 0 ? movements.map(m => (
+        <div key={m.id} className={cn(
+          "bg-white p-8 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-lg",
+          m.is_adjustment && "ring-2 ring-red-100"
+        )}>
+          <div className="flex items-center gap-4">
+             <div className={cn(
+               "p-3 rounded-2xl", 
+               m.is_adjustment ? "bg-red-500 text-white" : (m.type === 'ingreso' ? "bg-orange-100 text-orange-600" : "bg-amber-100 text-amber-600")
+             )}>
+               {m.is_adjustment ? <AlertCircle size={20} /> : (m.type === 'ingreso' ? <Plus size={20} /> : <Minus size={20} />)}
+             </div>
+             <div>
+               <div className="flex items-center gap-2">
+                 <p className="text-xs font-black text-slate-800 uppercase leading-tight">{m.medicine_id}</p>
+                 {m.is_adjustment && <span className="text-[8px] font-black bg-red-500 text-white px-1.5 py-0.5 rounded tracking-tighter">AJUSTE</span>}
+               </div>
+               <p className="text-[10px] font-bold text-slate-500">Cantidad: {m.quantity}</p>
+               {m.justification && (
+                 <p className="text-[10px] mt-2 text-red-600 font-bold bg-white/50 px-3 py-1 rounded-lg border border-red-100 italic">
+                   "{m.justification}"
+                 </p>
+               )}
+             </div>
+          </div>
+          <div className="flex-1 md:text-center">
+             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Realizado por</p>
+             <p className="font-bold text-slate-700">{m.user_name || m.user_email}</p>
+             <p className="text-[9px] text-slate-400">{m.user_email}</p>
+          </div>
+          <div className="text-right">
+             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Fecha</p>
+             <p className="font-bold text-slate-600 text-xs">
+               {m.created_at ? new Date(m.created_at).toLocaleString() : 'Reciente'}
+             </p>
+          </div>
+        </div>
+      )) : (
+        <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay registros de movimientos</div>
+      )}
+    </div>
+  );
+}
+
 async function updateUserInfo(uid: string, data: any) {
   try {
-    const userRef = doc(db, 'users', uid);
-    await setDoc(userRef, { ...data, updatedAt: serverTimestamp() }, { merge: true });
+    const { error } = await supabase
+      .from('users')
+      .update({ ...data, updated_at: new Date().toISOString() })
+      .eq('id', uid);
+
+    if (error) throw error;
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+    console.error('Error actualizando usuario:', error);
   }
 }
 
@@ -1142,16 +1652,27 @@ function UsersManager() {
   const [newDisplayName, setNewDisplayName] = useState("");
 
   useEffect(() => {
-    const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const data: User[] = [];
-      snap.forEach(doc => data.push({ uid: doc.id, ...doc.data() } as User));
-      setUsers(data);
+    const fetchUsers = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        const mappedUsers: User[] = data.map((u: any) => ({
+          uid: u.id,
+          email: u.email,
+          displayName: u.display_name,
+          role: u.role,
+          approved: u.approved,
+          accessCode: u.access_code,
+          photoURL: null
+        }));
+        setUsers(mappedUsers);
+      }
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'users');
-    });
-    return () => unsubscribe();
+    };
+    fetchUsers();
   }, []);
 
   const handleCreateUser = async (e: React.FormEvent) => {
@@ -1162,25 +1683,38 @@ function UsersManager() {
       const cleanEmail = newEmail.toLowerCase().trim();
       const userData = {
         email: cleanEmail,
-        displayName: newDisplayName,
+        display_name: newDisplayName,
         role: newRole,
-        accessCode: newAccessCode,
+        access_code: newAccessCode,
         approved: true,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       };
 
-      // Use a consistent ID for pre-registered users based on email
-      const tempId = `pre_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      await setDoc(doc(db, 'users', tempId), userData);
-      
+      const { error } = await supabase.from('users').insert(userData);
+      if (error) throw error;
+
       setShowAddForm(false);
       setNewEmail("");
       setNewDisplayName("");
       setNewRole("MEDICO");
       setNewAccessCode("");
+
+      // Refrescar lista
+      const { data } = await supabase.from('users').select('*').order('created_at', { ascending: false });
+      if (data) {
+        setUsers(data.map((u: any) => ({
+          uid: u.id,
+          email: u.email,
+          displayName: u.display_name,
+          role: u.role,
+          approved: u.approved,
+          accessCode: u.access_code
+        })));
+      }
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'users');
+      console.error('Error creando usuario:', error);
+      alert('Error al crear usuario');
     }
   };
 
@@ -1320,7 +1854,7 @@ function UsersManager() {
                 type="text"
                 placeholder="---"
                 value={u.accessCode || ''}
-                onChange={e => updateUserInfo(u.uid, { accessCode: e.target.value })}
+                onChange={e => updateUserInfo(u.uid, { access_code: e.target.value })}
                 className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-[10px] font-bold w-full focus:ring-1 focus:ring-orange-500 outline-none transition-all"
               />
             </div>
@@ -1343,411 +1877,6 @@ function UsersManager() {
         <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay usuarios registrados</div>
       )}
       </div>
-    </div>
-  );
-}
-
-function RoleCard({ title, icon, description, color, textColor, onClick }: any) {
-  return (
-    <motion.button
-      whileHover={{ y: -10, scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={onClick}
-      className={cn(
-        "p-10 rounded-[4rem] border-4 border-white ring-1 ring-slate-200 shadow-xl transition-all text-left flex flex-col h-full group",
-        color
-      )}
-    >
-      <div className={cn("p-5 rounded-3xl mb-8 w-fit transition-transform group-hover:scale-110", textColor, "bg-opacity-10", roleIconBg(textColor))}>
-         {icon}
-      </div>
-      <h3 className={cn("text-2xl font-black mb-4 uppercase tracking-tight", textColor)}>{title}</h3>
-      <p className={cn("text-sm font-medium leading-relaxed opacity-60 flex-1", textColor)}>
-        {description}
-      </p>
-      <div className={cn("mt-10 flex items-center gap-2 font-black uppercase tracking-widest text-[10px]", textColor)}>
-        <span>Seleccionar Perfil</span>
-        <Plus size={12} className="transition-transform group-hover:rotate-90" />
-      </div>
-    </motion.button>
-  );
-}
-
-function roleIconBg(textColor: string) {
-  if (textColor.includes('white')) return 'bg-white';
-  if (textColor.includes('orange')) return 'bg-orange-600';
-  return 'bg-slate-800';
-}
-
-function InputGroup({ label, value, onChange, placeholder, required, type = "text" }: any) {
-  return (
-    <div className="space-y-2">
-      <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">{label}</label>
-      <input 
-        required={required}
-        type={type}
-        value={value ?? ''}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full bg-slate-100 border-none rounded-2xl px-5 py-4 font-bold text-slate-700 focus:ring-2 focus:ring-orange-500 outline-none shadow-inner"
-      />
-    </div>
-  );
-}
-
-function MovementForm({ type, title, onConfirm }: { type: MovementType, title: string, onConfirm: (q: number, e?: string, isAdj?: boolean, just?: string) => void }) {
-  const [quantity, setQuantity] = useState("1");
-  const [expiryMonth, setExpiryMonth] = useState(new Date().getMonth() + 1);
-  const [expiryYear, setExpiryYear] = useState(new Date().getFullYear());
-  const [isAdjustment, setIsAdjustment] = useState(false);
-  const [justification, setJustification] = useState("");
-  const isIngreso = type === 'ingreso';
-
-  const months = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
-  ];
-
-  const handleConfirm = () => {
-    const q = parseInt(quantity);
-    if (isNaN(q) || q <= 0) {
-      alert("Ingrese una cantidad válida");
-      return;
-    }
-
-    if (isIngreso) {
-      // Formatear como YYYY-MM para mantener consistencia en la DB
-      const formattedMonth = expiryMonth.toString().padStart(2, '0');
-      const expiry = `${expiryYear}-${formattedMonth}`;
-      onConfirm(q, expiry, isAdjustment, justification);
-    } else {
-      onConfirm(q, undefined, isAdjustment, justification);
-    }
-  };
-
-  return (
-    <div className={cn("p-8 rounded-[3rem] border-4 shadow-xl border-white ring-1 ring-slate-100", isIngreso ? "bg-orange-50/40" : "bg-amber-50/40")}>
-      <h4 className={cn("text-xs font-black uppercase tracking-widest mb-6", isIngreso ? "text-orange-600" : "text-amber-600")}>{title}</h4>
-      <div className="space-y-4">
-        <div className="space-y-2">
-          <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Cantidad</label>
-          <div className="flex items-center gap-3">
-              <button type="button" onClick={() => setQuantity(q => Math.max(1, parseInt(q || "0") - 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform"><Minus size={16} /></button>
-              <input type="number" value={quantity ?? ''} onChange={e => setQuantity(e.target.value)} className="flex-1 bg-white rounded-xl py-3 text-center font-black text-lg focus:outline-none shadow-sm" />
-              <button type="button" onClick={() => setQuantity(q => (parseInt(q || "0") + 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform"><Plus size={16} /></button>
-          </div>
-        </div>
-
-        {isIngreso && (
-          <div className="space-y-2">
-            <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Vencimiento (Mes / Año)</label>
-            <div className="flex gap-2">
-              <select 
-                value={expiryMonth ?? 1} 
-                onChange={e => setExpiryMonth(parseInt(e.target.value))}
-                className="flex-[2] bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 outline-none"
-              >
-                {months.map((m, i) => (
-                  <option key={m} value={i + 1}>{m}</option>
-                ))}
-              </select>
-              <input 
-                type="number" 
-                placeholder="Año"
-                value={expiryYear ?? new Date().getFullYear()}
-                onChange={e => setExpiryYear(parseInt(e.target.value))}
-                className="flex-1 bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 text-center outline-none"
-              />
-            </div>
-          </div>
-        )}
-
-        <div className="pt-2">
-          <label className="flex items-center gap-3 cursor-pointer group">
-            <div className={cn(
-              "w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all",
-              isAdjustment ? "bg-red-500 border-red-500 text-white" : "border-slate-200 bg-white group-hover:border-slate-300"
-            )} onClick={() => setIsAdjustment(!isAdjustment)}>
-              {isAdjustment && <X size={14} className="stroke-[4]" />}
-            </div>
-            <span className="text-[10px] uppercase font-black tracking-widest text-slate-500">¿Es un ajuste de inventario?</span>
-          </label>
-        </div>
-
-        {isAdjustment && (
-          <div className="space-y-2">
-            <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Justificación del ajuste</label>
-            <textarea 
-              value={justification}
-              onChange={e => setJustification(e.target.value)}
-              placeholder="Ej: Faltante detectado, rotura, sobra de stock..."
-              className="w-full bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-red-400 outline-none min-h-[80px]"
-            />
-          </div>
-        )}
-
-        <button onClick={handleConfirm} className={cn("w-full py-4 rounded-2xl font-black text-white shadow-lg transition-all active:scale-95 mt-2", isIngreso ? "bg-orange-500 shadow-orange-50 hover:bg-orange-600" : "bg-amber-500 shadow-amber-50 hover:bg-amber-600")}>
-          Confirmar {isAdjustment ? 'AJUSTE' : (isIngreso ? 'Ingreso' : 'Dispensa')}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function BatchList({ medicineId, isAdmin, onEdit }: { medicineId: string, isAdmin?: boolean, onEdit?: (b: Batch) => void }) {
-  const [batches, setBatches] = useState<Batch[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const q = query(collection(db, `medicines/${medicineId}/batches`), where('quantity', '>', 0), orderBy('vencimiento', 'asc'));
-    return onSnapshot(q, (snap) => {
-      const data: Batch[] = [];
-      snap.forEach(doc => data.push({ id: doc.id, ...doc.data() } as Batch));
-      setBatches(data);
-      setLoading(false);
-    });
-  }, [medicineId]);
-
-  if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Cargando lotes...</div>;
-
-  return (
-    <div className="space-y-4">
-      {batches.length > 0 ? batches.map(b => (
-        <div key={b.id} className="bg-slate-50 p-6 rounded-[2rem] border-2 border-white shadow-sm flex items-center justify-between group hover:bg-white hover:shadow-md transition-all">
-          <div className="flex items-center gap-4">
-             <Calendar size={18} className="text-amber-500" />
-             <div>
-               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Vencimiento</p>
-               <p className="font-bold text-slate-700 leading-none">{b.vencimiento}</p>
-             </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <div className="text-right">
-               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Stock</p>
-               <p className="font-black text-orange-600 text-lg leading-none">{b.quantity}</p>
-            </div>
-            {isAdmin && (
-              <button 
-                onClick={() => onEdit?.(b)}
-                className="bg-slate-50 p-2 rounded-xl text-slate-400 hover:text-orange-500 hover:bg-orange-50 transition-all opacity-0 group-hover:opacity-100"
-              >
-                <Plus size={16} className="rotate-45" />
-              </button>
-            )}
-          </div>
-        </div>
-      )) : (
-        <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">Sin stock por lotes</div>
-      )}
-    </div>
-  );
-}
-
-function ExpirationAlerts({ medicines }: { medicines: Medicine[] }) {
-  const [allBatches, setAllBatches] = useState<(Batch & { medicine: Medicine })[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let isMounted = true;
-    const fetchAll = async () => {
-      const results: (Batch & { medicine: Medicine })[] = [];
-      
-      // We fetch batches for all medicines
-      // In a large app, we would use a collection group query
-      for (const m of medicines) {
-        const snap = await getDocs(query(
-          collection(db, `medicines/${m.id}/batches`),
-          where('quantity', '>', 0)
-        ));
-        snap.forEach(d => {
-          results.push({ id: d.id, ...d.data(), medicine: m } as any);
-        });
-      }
-
-      if (isMounted) {
-        // Sort by expiration date
-        const sorted = results.sort((a, b) => a.vencimiento.localeCompare(b.vencimiento));
-        
-        // Filter those expiring in the next 90 days (roughly)
-        const ninetyDaysFromNow = new Date();
-        ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90);
-        const limitStr = ninetyDaysFromNow.toISOString().substring(0, 7); // YYYY-MM
-
-        const upcoming = sorted.filter(b => b.vencimiento <= limitStr);
-        setAllBatches(upcoming);
-        setLoading(false);
-      }
-    };
-
-    fetchAll();
-    return () => { isMounted = false; };
-  }, [medicines]);
-
-  if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Analizando fechas de vencimiento...</div>;
-
-  return (
-    <div className="space-y-4">
-      {allBatches.length > 0 ? allBatches.map(b => {
-        const isExpired = b.vencimiento <= new Date().toISOString().substring(0, 7);
-        return (
-          <div key={`${b.medicine.id}-${b.id}`} className={cn(
-            "p-8 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-xl",
-            isExpired ? "bg-red-50" : "bg-amber-50/50"
-          )}>
-            <div className="flex items-center gap-4">
-               <div className={cn("p-3 rounded-2xl", isExpired ? "bg-red-100 text-red-600" : "bg-amber-100 text-amber-600")}>
-                 <Calendar size={20} />
-               </div>
-               <div>
-                 <p className="text-xs font-black text-slate-800 uppercase leading-none mb-1">{b.medicine.droga}</p>
-                 <p className="text-[10px] font-bold text-slate-400 italic mb-1">{b.medicine.nombreComercial}</p>
-                 <div className="flex items-center gap-2">
-                    <span className={cn("text-[10px] font-black uppercase px-2 py-0.5 rounded", isExpired ? "bg-red-600 text-white" : "bg-amber-500 text-white")}>
-                      {isExpired ? 'VENCIDO' : 'PRÓXIMO'}
-                    </span>
-                    <span className="text-[10px] font-bold text-slate-500">Lote: {b.id.substring(0, 8)}</span>
-                 </div>
-               </div>
-            </div>
-            
-            <div className="flex-1 md:text-center">
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Vencimiento</p>
-               <p className={cn("font-black text-lg", isExpired ? "text-red-600" : "text-amber-600")}>{b.vencimiento}</p>
-            </div>
-
-            <div className="text-right">
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Stock en Lote</p>
-               <p className="font-black text-slate-700 text-lg leading-none">{b.quantity}</p>
-            </div>
-          </div>
-        );
-      }) : (
-        <div className="py-20 text-center">
-          <div className="w-16 h-16 bg-orange-50 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Package size={32} />
-          </div>
-          <p className="text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay vencimientos próximos detectados</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AuditLog() {
-  const [movements, setMovements] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const q = query(collection(db, 'global_movements'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const data: any[] = [];
-      snap.forEach(doc => data.push({ id: doc.id, ...doc.data() }));
-      setMovements(data);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'global_movements');
-    });
-    return () => unsubscribe();
-  }, []);
-
-  if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Cargando auditoría...</div>;
-
-  const exportMovements = () => {
-    if (movements.length === 0) return;
-    
-    const doc = new jsPDF();
-    
-    // Header
-    doc.setFontSize(22);
-    doc.setTextColor(30, 41, 59);
-    doc.text("Farmacia Sabatto", 14, 20);
-    
-    doc.setFontSize(14);
-    doc.setTextColor(100, 116, 139);
-    doc.text("Informe de Auditoría de Movimientos", 14, 28);
-    
-    doc.setFontSize(10);
-    doc.text(`Fecha de emisión: ${new Date().toLocaleString()}`, 14, 36);
-
-    const tableData = movements.map(m => [
-      m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString() : '',
-      m.medicineName,
-      `${m.type === 'ingreso' ? 'INGRESO' : 'DISPENSA'}${m.isAdjustment ? ' (AJUSTE)' : ''}`,
-      m.quantity.toString(),
-      `${m.userEmail || m.userName}${m.justification ? `\nJustif: ${m.justification}` : ''}`
-    ]);
-
-    autoTable(doc, {
-      startY: 45,
-      head: [["Fecha", "Medicamento", "Tipo", "Cant.", "Usuario / Justif."]],
-      body: tableData,
-      theme: 'grid',
-      headStyles: { fillColor: [30, 41, 59], fontStyle: 'bold' },
-      styles: { fontSize: 8, cellPadding: 2 },
-      columnStyles: {
-        0: { cellWidth: 35 },
-        1: { cellWidth: 40 },
-        2: { cellWidth: 25 },
-        3: { cellWidth: 15 },
-        4: { cellWidth: 'auto' }
-      }
-    });
-
-    doc.save(`auditoria_movimientos_${new Date().toISOString().split('T')[0]}.pdf`);
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-end mb-4">
-        <button 
-          onClick={exportMovements}
-          className="bg-slate-900 text-white px-6 py-3 rounded-2xl font-bold flex items-center gap-2 hover:bg-slate-800 transition-all text-sm"
-        >
-          <FileText size={18} />
-          Exportar PDF Auditoría
-        </button>
-      </div>
-      {movements.length > 0 ? movements.map(m => (
-        <div key={m.id} className={cn(
-          "bg-white p-8 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-lg",
-          m.isAdjustment && "ring-2 ring-red-100"
-        )}>
-          <div className="flex items-center gap-4">
-             <div className={cn(
-               "p-3 rounded-2xl", 
-               m.isAdjustment ? "bg-red-500 text-white" : (m.type === 'ingreso' ? "bg-orange-100 text-orange-600" : "bg-amber-100 text-amber-600")
-             )}>
-               {m.isAdjustment ? <AlertCircle size={20} /> : (m.type === 'ingreso' ? <Plus size={20} /> : <Minus size={20} />)}
-             </div>
-             <div>
-               <div className="flex items-center gap-2">
-                 <p className="text-xs font-black text-slate-800 uppercase leading-tight">{m.medicineName}</p>
-                 {m.isAdjustment && <span className="text-[8px] font-black bg-red-500 text-white px-1.5 py-0.5 rounded tracking-tighter">AJUSTE</span>}
-               </div>
-               {m.medicineComercialName && <p className="text-[9px] font-medium text-slate-400 italic mb-1">{m.medicineComercialName}</p>}
-               <p className="text-[10px] font-bold text-slate-500">Cantidad: {m.quantity}</p>
-               {m.justification && (
-                 <p className="text-[10px] mt-2 text-red-600 font-bold bg-white/50 px-3 py-1 rounded-lg border border-red-100 italic">
-                   "{m.justification}"
-                 </p>
-               )}
-             </div>
-          </div>
-          <div className="flex-1 md:text-center">
-             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Realizado por</p>
-             <p className="font-bold text-slate-700">{m.userName || m.userEmail}</p>
-             <p className="text-[9px] text-slate-400">{m.userEmail}</p>
-          </div>
-          <div className="text-right">
-             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Fecha</p>
-             <p className="font-bold text-slate-600 text-xs">
-               {m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString() : 'Reciente'}
-             </p>
-          </div>
-        </div>
-      )) : (
-        <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay registros de movimientos</div>
-      )}
     </div>
   );
 }
