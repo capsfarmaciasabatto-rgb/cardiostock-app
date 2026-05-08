@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from './lib/supabase'
 import { Medicine, Movement, MovementType, User, Batch, UserRole } from './types';
-import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check } from 'lucide-react';
+import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check, Upload } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import initialData from './data/inventory.json';
@@ -21,6 +21,34 @@ type AppUser = {
 };
 
 // ============================================================
+// MAPEO DE CAMPOS: camelCase (frontend) ↔ snake_case (Supabase)
+// ============================================================
+const toSnakeCase = (obj: any) => ({
+  droga: obj.droga,
+  nombre_comercial: obj.nombreComercial,
+  presentacion: obj.presentacion,
+  familia: obj.familia,
+  ubicacion: obj.ubicacion,
+  stock_actual: obj.stockActual ?? 0,
+  min_stock: obj.minStock ?? 5,
+  observaciones: obj.observaciones,
+  fecha_vencimiento: obj.fechaVencimiento
+});
+
+const toCamelCase = (obj: any): Medicine => ({
+  id: obj.id,
+  droga: obj.droga,
+  nombreComercial: obj.nombre_comercial,
+  presentacion: obj.presentacion,
+  familia: obj.familia,
+  ubicacion: obj.ubicacion,
+  stockActual: obj.stock_actual ?? 0,
+  minStock: obj.min_stock ?? 5,
+  observaciones: obj.observaciones,
+  fechaVencimiento: obj.fecha_vencimiento
+});
+
+// ============================================================
 // COMPONENTE PRINCIPAL
 // ============================================================
 export default function App() {
@@ -36,6 +64,7 @@ export default function App() {
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showExpirationModal, setShowExpirationModal] = useState(false);
   const [showUsersModal, setShowUsersModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [viewType, setViewType] = useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = useState<'droga' | 'familia' | 'stock'>('droga');
   const [isSeeding, setIsSeeding] = useState(false);
@@ -64,6 +93,12 @@ export default function App() {
     observaciones: '',
     minStock: 0
   });
+
+  // Import CSV states
+  const [importData, setImportData] = useState<any[]>([]);
+  const [importPreview, setImportPreview] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --- Verificar sesión al cargar ---
   useEffect(() => {
@@ -119,7 +154,7 @@ export default function App() {
       if (error) {
         console.error('Error al cargar medicamentos:', error);
       } else {
-        setMedicines(data || []);
+        setMedicines((data || []).map(toCamelCase));
       }
     };
     fetchMedicines();
@@ -148,18 +183,19 @@ export default function App() {
     });
   }, [medicines, searchTerm, filterLowStock, sortBy]);
 
+  // --- Seed inicial ---
   const handleSeedData = async () => {
     if (isSeeding) return;
     setIsSeeding(true);
     try {
-      const medicinesToInsert = initialData.map(item => ({
+      const medicinesToInsert = initialData.map(item => toSnakeCase({
         droga: item.droga || '',
-        nombre_comercial: item.nombreComercial || '',
+        nombreComercial: item.nombreComercial || '',
         presentacion: item.presentacion || '',
         familia: item.familia || '',
         ubicacion: item.ubicacion || '',
-        stock_actual: item.stockActual || 0,
-        min_stock: 5
+        stockActual: item.stockActual || 0,
+        minStock: 5
       }));
 
       const { error } = await supabase.from('medicines').insert(medicinesToInsert);
@@ -175,6 +211,7 @@ export default function App() {
     }
   };
 
+  // --- Login con Google ---
   const handleSignIn = async () => {
     setIsLoggingIn(true);
     const { error } = await supabase.auth.signInWithOAuth({
@@ -193,6 +230,7 @@ export default function App() {
     setManualLogin(false);
   };
 
+  // --- Login manual ---
   const handleManualLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
@@ -250,6 +288,7 @@ export default function App() {
     }
   };
 
+  // --- Selección de rol ---
   const handleSelectRole = async (role: UserRole) => {
     if (!pendingUser) return;
     try {
@@ -287,32 +326,37 @@ export default function App() {
     }
   };
 
+  // --- CRUD Medicamentos ---
   const handleAddMedicine = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
 
     try {
+      const insertData = toSnakeCase({
+        ...newMedicine,
+        stockActual: 0
+      });
+
       const { error } = await supabase
         .from('medicines')
-        .insert([{
-          droga: newMedicine.droga,
-          nombre_comercial: newMedicine.nombreComercial,
-          presentacion: newMedicine.presentacion,
-          familia: newMedicine.familia,
-          ubicacion: newMedicine.ubicacion,
-          min_stock: newMedicine.minStock || 0,
-          observaciones: newMedicine.observaciones,
-          stock_actual: 0
-        }]);
+        .insert([insertData]);
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error Supabase:', error);
+        throw error;
+      }
+
       setShowAddMedicineModal(false);
+      setNewMedicine({
+        nombreComercial: '', droga: '', presentacion: '', familia: '', ubicacion: '', observaciones: '', minStock: 0
+      });
 
       const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines(updatedList || []);
-    } catch (error) {
+      setMedicines((updatedList || []).map(toCamelCase));
+      alert('Medicamento agregado correctamente');
+    } catch (error: any) {
       console.error(error);
-      alert('Error al agregar el medicamento.');
+      alert('Error al agregar el medicamento: ' + (error.message || 'Error desconocido'));
     }
   };
 
@@ -320,17 +364,13 @@ export default function App() {
     e.preventDefault();
     if (!user || !editingMedicine) return;
     try {
+      const updateData = toSnakeCase(editingMedicine);
+      delete (updateData as any).id;
+      delete (updateData as any).created_at;
+
       const { error } = await supabase
         .from('medicines')
-        .update({
-          droga: editingMedicine.droga,
-          nombre_comercial: editingMedicine.nombreComercial,
-          presentacion: editingMedicine.presentacion,
-          familia: editingMedicine.familia,
-          ubicacion: editingMedicine.ubicacion,
-          min_stock: editingMedicine.minStock || 0,
-          observaciones: editingMedicine.observaciones
-        })
+        .update(updateData)
         .eq('id', editingMedicine.id);
 
       if (error) throw error;
@@ -339,10 +379,11 @@ export default function App() {
       setEditingMedicine(null);
 
       const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines(updatedList || []);
-    } catch (error) {
+      setMedicines((updatedList || []).map(toCamelCase));
+      alert('Medicamento actualizado correctamente');
+    } catch (error: any) {
       console.error(error);
-      alert('Error al actualizar el medicamento.');
+      alert('Error al actualizar: ' + (error.message || 'Error desconocido'));
     }
   };
 
@@ -363,13 +404,86 @@ export default function App() {
       setEditingBatch(null);
 
       const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines(updatedList || []);
+      setMedicines((updatedList || []).map(toCamelCase));
     } catch (error) {
       console.error(error);
       alert('Error al actualizar el stock.');
     }
   };
 
+  // --- IMPORTACIÓN CSV/EXCEL ---
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+
+      const lines = text.split('\n').filter(line => line.trim());
+      if (lines.length < 2) {
+        alert('El archivo CSV está vacío o no tiene datos');
+        return;
+      }
+
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      const rows = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].split(',');
+        const row: any = {};
+        headers.forEach((header, index) => {
+          row[header] = values[index]?.trim() || '';
+        });
+
+        // Mapear a formato Supabase
+        rows.push({
+          droga: row.droga || '',
+          nombre_comercial: row.nombre_comercial || row.nombrecomercial || '',
+          presentacion: row.presentacion || '',
+          familia: row.familia || '',
+          ubicacion: row.ubicacion || '',
+          stock_actual: parseInt(row.stock_actual || row.stockactual || '0') || 0,
+          min_stock: parseInt(row.min_stock || row.minstock || '5') || 5,
+          observaciones: row.observaciones || ''
+        });
+      }
+
+      setImportData(rows);
+      setImportPreview(true);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleImportConfirm = async () => {
+    if (importData.length === 0) return;
+    setImportLoading(true);
+
+    try {
+      const { error } = await supabase.from('medicines').insert(importData);
+      if (error) {
+        console.error('Error importando:', error);
+        alert('Error al importar: ' + error.message);
+      } else {
+        alert(`¡${importData.length} medicamentos importados con éxito!`);
+        setShowImportModal(false);
+        setImportData([]);
+        setImportPreview(false);
+
+        // Refrescar lista
+        const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
+        setMedicines((updatedList || []).map(toCamelCase));
+      }
+    } catch (error: any) {
+      console.error(error);
+      alert('Error al importar: ' + (error.message || 'Error desconocido'));
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  // --- Registro de movimientos ---
   const registerMovement = async (
     type: MovementType, 
     quantity: number, 
@@ -452,7 +566,7 @@ export default function App() {
       await supabase.from('medicines').update({ stock_actual: newStock }).eq('id', selectedMedicine.id);
 
       const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines(updatedList || []);
+      setMedicines((updatedList || []).map(toCamelCase));
 
       setShowMovementModal(false);
       setTimeout(() => setSelectedMedicine(null), 200);
@@ -763,13 +877,22 @@ export default function App() {
               </>
             )}
             {isTecnico && (
-              <button 
-                onClick={() => setShowAddMedicineModal(true)}
-                className="bg-orange-600 hover:bg-orange-700 text-white px-8 py-4 rounded-2xl font-black transition-all shadow-lg shadow-orange-100 flex items-center gap-2"
-              >
-                <Plus size={20} />
-                Agregar Medicamento
-              </button>
+              <>
+                <button 
+                  onClick={() => setShowAddMedicineModal(true)}
+                  className="bg-orange-600 hover:bg-orange-700 text-white px-8 py-4 rounded-2xl font-black transition-all shadow-lg shadow-orange-100 flex items-center gap-2"
+                >
+                  <Plus size={20} />
+                  Agregar Medicamento
+                </button>
+                <button 
+                  onClick={() => setShowImportModal(true)}
+                  className="bg-white text-slate-600 px-6 py-4 rounded-2xl font-bold border border-slate-200 flex items-center gap-2 hover:bg-orange-50 hover:border-orange-200 transition-all"
+                >
+                  <Upload size={20} className="text-orange-500" />
+                  Importar CSV
+                </button>
+              </>
             )}
             {medicines.length === 0 && (
               <button onClick={handleSeedData} disabled={isSeeding} className="bg-slate-100 text-slate-600 px-6 py-4 rounded-2xl font-bold">
@@ -847,7 +970,7 @@ export default function App() {
             </div>
         </div>
 
-        {/* GRID VIEW */}
+        {/* GRID / LIST VIEW */}
         {viewType === 'grid' ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             <AnimatePresence mode="popLayout">
@@ -923,7 +1046,6 @@ export default function App() {
             </AnimatePresence>
           </div>
         ) : (
-          /* LIST VIEW */
           <div className="bg-white rounded-[3rem] shadow-xl border-4 border-white ring-1 ring-slate-200 overflow-hidden">
              <div className="grid grid-cols-12 gap-4 px-8 py-6 border-b border-slate-100 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
                 <div className="col-span-5">Droga / Marca</div>
@@ -1139,6 +1261,133 @@ export default function App() {
                      Guardar
                    </button>
                 </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* IMPORT CSV MODAL */}
+      <AnimatePresence>
+        {showImportModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowImportModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-4xl bg-white rounded-[3rem] shadow-2xl p-10 max-h-[90vh] flex flex-col">
+              <div className="flex justify-between items-center mb-8">
+                <div className="flex items-center gap-4">
+                   <div className="p-3 bg-orange-50 rounded-2xl text-orange-600">
+                     <Upload size={24} />
+                   </div>
+                   <div>
+                     <h2 className="text-3xl font-black text-slate-800 uppercase">Importar Medicamentos</h2>
+                     <p className="text-slate-400 font-medium text-sm">Suba un archivo CSV con el formato correcto</p>
+                   </div>
+                </div>
+                <button onClick={() => { setShowImportModal(false); setImportPreview(false); setImportData([]); }} className="bg-slate-100 p-2 rounded-full text-slate-400"><X size={24} /></button>
+              </div>
+
+              <div className="overflow-y-auto flex-1 pr-4">
+                {!importPreview ? (
+                  <div className="space-y-6">
+                    <div className="bg-slate-50 p-6 rounded-2xl border-2 border-slate-100">
+                      <h4 className="text-sm font-black text-slate-800 mb-4 uppercase">Formato requerido del CSV:</h4>
+                      <code className="block bg-slate-900 text-green-400 p-4 rounded-xl text-xs font-mono overflow-x-auto">
+                        droga,nombre_comercial,presentacion,familia,ubicacion,stock_actual,min_stock,observaciones<br/>
+                        Apixaban,Eliquis,2.5mg comp,Anticoagulante,C1,10,5,<br/>
+                        Rivaroxaban,Xarelto,20mg comp,Anticoagulante,C2,15,5,
+                      </code>
+                      <p className="text-xs text-slate-500 mt-4">
+                        <strong>Nota:</strong> La primera fila debe contener los encabezados exactos. 
+                        Guarde su Excel como "CSV UTF-8".
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col items-center gap-4">
+                      <input 
+                        type="file" 
+                        accept=".csv"
+                        ref={fileInputRef}
+                        onChange={handleFileUpload}
+                        className="hidden"
+                      />
+                      <button 
+                        onClick={() => fileInputRef.current?.click()}
+                        className="bg-orange-500 hover:bg-orange-600 text-white px-8 py-4 rounded-2xl font-black transition-all shadow-lg flex items-center gap-3"
+                      >
+                        <Upload size={20} />
+                        Seleccionar Archivo CSV
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                      <h4 className="text-lg font-black text-slate-800">Vista previa ({importData.length} registros)</h4>
+                      <button 
+                        onClick={() => { setImportPreview(false); setImportData([]); }}
+                        className="text-xs font-black text-slate-400 uppercase tracking-widest hover:text-orange-500"
+                      >
+                        Cambiar archivo
+                      </button>
+                    </div>
+
+                    <div className="bg-slate-50 rounded-2xl overflow-hidden border-2 border-slate-100">
+                      <div className="grid grid-cols-7 gap-2 px-4 py-3 bg-slate-100 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                        <div>Droga</div>
+                        <div>Marca</div>
+                        <div>Presentación</div>
+                        <div>Familia</div>
+                        <div>Ubic.</div>
+                        <div>Stock</div>
+                        <div>Mín.</div>
+                      </div>
+                      <div className="max-h-64 overflow-y-auto">
+                        {importData.slice(0, 50).map((row, idx) => (
+                          <div key={idx} className="grid grid-cols-7 gap-2 px-4 py-2 text-xs border-b border-slate-100">
+                            <div className="font-bold truncate">{row.droga}</div>
+                            <div className="truncate">{row.nombre_comercial}</div>
+                            <div className="truncate">{row.presentacion}</div>
+                            <div className="truncate">{row.familia}</div>
+                            <div>{row.ubicacion}</div>
+                            <div className="font-black text-orange-600">{row.stock_actual}</div>
+                            <div>{row.min_stock}</div>
+                          </div>
+                        ))}
+                        {importData.length > 50 && (
+                          <div className="text-center py-2 text-xs text-slate-400">
+                            ... y {importData.length - 50} registros más
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-4">
+                      <button 
+                        onClick={() => { setImportPreview(false); setImportData([]); }}
+                        className="flex-1 py-4 font-bold text-slate-400 rounded-2xl hover:bg-slate-50 transition-all"
+                      >
+                        Cancelar
+                      </button>
+                      <button 
+                        onClick={handleImportConfirm}
+                        disabled={importLoading}
+                        className="flex-[2] bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-100 hover:bg-orange-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                      >
+                        {importLoading ? (
+                          <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            Importando...
+                          </>
+                        ) : (
+                          <>
+                            <Check size={18} />
+                            Confirmar Importación
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>
@@ -1700,7 +1949,6 @@ function UsersManager() {
       setNewRole("MEDICO");
       setNewAccessCode("");
 
-      // Refrescar lista
       const { data } = await supabase.from('users').select('*').order('created_at', { ascending: false });
       if (data) {
         setUsers(data.map((u: any) => ({
