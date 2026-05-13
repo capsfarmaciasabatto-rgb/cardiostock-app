@@ -1775,13 +1775,20 @@ function ExpirationAlerts({ medicines }: { medicines: Medicine[] }) {
 
 function AuditLog() {
   const [movements, setMovements] = useState<any[]>([]);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchMovements = async () => {
       const { data, error } = await supabase
         .from('movements')
-        .select('*')
+        .select(`
+          *,
+          medicines (
+            droga
+          )
+        `)
         .order('created_at', { ascending: false });
 
       if (!error && data) {
@@ -1809,7 +1816,7 @@ function AuditLog() {
 
     const tableData = movements.map(m => [
       m.created_at ? new Date(m.created_at).toLocaleString() : '',
-      m.medicine_id,
+      m.medicines?.droga || 'Medicamento no identificado',
       `${m.type === 'ingreso' ? 'INGRESO' : 'DISPENSA'}${m.is_adjustment ? ' (AJUSTE)' : ''}`,
       m.quantity.toString(),
       `${m.user_email || m.user_name}${m.justification ? `\nJustif: ${m.justification}` : ''}`
@@ -1844,50 +1851,80 @@ function AuditLog() {
           <FileText size={18} />
           Exportar PDF Auditoría
         </button>
-      </div>
-      {movements.length > 0 ? movements.map(m => (
-        <div key={m.id} className={cn(
-          "bg-white p-8 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-lg",
-          m.is_adjustment && "ring-2 ring-red-100"
-        )}>
-          <div className="flex items-center gap-4">
-             <div className={cn(
-               "p-3 rounded-2xl", 
-               m.is_adjustment ? "bg-red-500 text-white" : (m.type === 'ingreso' ? "bg-orange-100 text-orange-600" : "bg-amber-100 text-amber-600")
-             )}>
-               {m.is_adjustment ? <AlertCircle size={20} /> : (m.type === 'ingreso' ? <Plus size={20} /> : <Minus size={20} />)}
-             </div>
-             <div>
-               <div className="flex items-center gap-2">
-                 <p className="text-xs font-black text-slate-800 uppercase leading-tight">{m.medicine_id}</p>
-                 {m.is_adjustment && <span className="text-[8px] font-black bg-red-500 text-white px-1.5 py-0.5 rounded tracking-tighter">AJUSTE</span>}
-               </div>
-               <p className="text-[10px] font-bold text-slate-500">Cantidad: {m.quantity}</p>
-               {m.justification && (
-                 <p className="text-[10px] mt-2 text-red-600 font-bold bg-white/50 px-3 py-1 rounded-lg border border-red-100 italic">
-                   "{m.justification}"
-                 </p>
-               )}
-             </div>
+      <div className="flex gap-4 mb-4 p-4 bg-slate-100 rounded-xl border border-slate-200">
+            <div className="flex flex-col gap-1 flex-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Desde</label>
+              <input 
+                type="date" 
+                className="text-sm border-0 rounded-lg p-2 shadow-sm" 
+                value={startDate} 
+                onChange={(e) => setStartDate(e.target.value)} 
+              />
+            </div>
+            <div className="flex flex-col gap-1 flex-1">
+              <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Hasta</label>
+              <input 
+                type="date" 
+                className="text-sm border-0 rounded-lg p-2 shadow-sm" 
+                value={endDate} 
+                onChange={(e) => setEndDate(e.target.value)} 
+              />
+            </div>
           </div>
-          <div className="flex-1 md:text-center">
-             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Realizado por</p>
-             <p className="font-bold text-slate-700">{m.user_name || m.user_email}</p>
-             <p className="text-[9px] text-slate-400">{m.user_email}</p>
+      {movements.filter(m => {
+  if (!startDate || !endDate) return true;
+  const mDate = new Date(m.created_at).toISOString().split('T')[0];
+  return mDate >= startDate && mDate <= endDate;
+}).length > 0 ? (
+  movements
+    .filter(m => {
+      if (!startDate || !endDate) return true;
+      const mDate = new Date(m.created_at).toISOString().split('T')[0];
+      return mDate >= startDate && mDate <= endDate;
+    })
+    .map((m) => (
+      <div key={m.id} className={cn(
+        "bg-white p-8 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-lg",
+        m.is_adjustment && "ring-2 ring-red-100"
+      )}>
+        <div className="flex items-center gap-4">
+          <div className={cn(
+            "p-3 rounded-2xl",
+            m.is_adjustment ? "bg-red-500 text-white" : (m.type === 'ingreso' ? "bg-orange-100 text-orange-600" : "bg-amber-100 text-amber-600")
+          )}>
+            {m.is_adjustment ? <AlertCircle size={20} /> : (m.type === 'ingreso' ? <Plus size={20} /> : <Minus size={20} />)}
           </div>
-          <div className="text-right">
-             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Fecha</p>
-             <p className="font-bold text-slate-600 text-xs">
-               {m.created_at ? new Date(m.created_at).toLocaleString() : 'Reciente'}
-             </p>
+          <div>
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-black text-slate-800 uppercase leading-tight">{m.medicines?.droga || 'Medicamento no identificado'}</p>
+              {m.is_adjustment && <span className="text-[8px] font-black bg-red-500 text-white px-1.5 py-0.5 rounded tracking-tighter">AJUSTE</span>}
+            </div>
+            <p className="text-[10px] font-bold text-slate-500">Cantidad: {m.quantity}</p>
+            {m.justification && (
+              <p className="text-[10px] mt-2 text-red-600 font-bold bg-white/50 px-3 py-1 rounded-lg border border-red-100 italic">
+                "{m.justification}"
+              </p>
+            )}
           </div>
         </div>
-      )) : (
-        <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay registros de movimientos</div>
-      )}
-    </div>
-  );
-}
+
+        <div className="flex-1 md:text-center">
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Realizado por</p>
+          <p className="font-bold text-slate-700">{m.user_name || m.user_email}</p>
+          <p className="text-[9px] text-slate-400">{m.user_email}</p>
+        </div>
+
+        <div className="text-right">
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Fecha</p>
+          <p className="font-bold text-slate-600 text-xs">
+            {m.created_at ? new Date(m.created_at).toLocaleString() : 'Reciente'}
+          </p>
+        </div>
+      </div>
+    ))
+) : (
+  <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay registros en este rango de fechas</div>
+)}
 
 async function updateUserInfo(uid: string, data: any) {
   try {
