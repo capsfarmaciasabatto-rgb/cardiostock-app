@@ -1925,6 +1925,9 @@ function AuditLog() {
 ) : (
   <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay registros en este rango de fechas</div>
 )}
+   </div>
+  );
+}
 
 async function updateUserInfo(uid: string, data: any) {
   try {
