@@ -1920,16 +1920,18 @@ function AuditLog() {
             {m.created_at ? new Date(m.created_at).toLocaleString() : 'Reciente'}
           </p>
         </div>
-           </div>
-         ))
-       ) : (
-         <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay registros en este rango de fechas</div>
-       )}
-     </div>
-   );
- }
- 
-  async function updateUserInfo(uid: string, data: any) {
+</div>
+        ))
+    ) : (
+      <div className="py-20 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">
+        No hay registros en este rango de fechas
+      </div>
+    )}
+  </div>
+  );
+}
+
+async function updateUserInfo(uid: string, data: any) {
   try {
     const { error } = await supabase
       .from('users')
