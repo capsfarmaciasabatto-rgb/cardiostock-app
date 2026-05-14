@@ -67,6 +67,7 @@ export default function App() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [viewType, setViewType] = useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = useState<'droga' | 'familia' | 'stock'>('droga');
+  const [locationFilter, setLocationFilter] = useState<'cardio' | 'all'>('cardio');
   const [isSeeding, setIsSeeding] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [allMovements, setAllMovements] = useState<any[]>([]);
@@ -172,7 +173,11 @@ export default function App() {
 
       const isLowStock = filterLowStock ? (m.stockActual <= (m.minStock || 0)) : true;
 
-      return matchesSearch && isLowStock;
+      const matchesLocation = locationFilter === 'all' 
+        ? true 
+        : m.ubicacion?.toUpperCase().startsWith('C');
+
+      return matchesSearch && isLowStock && matchesLocation;
     });
 
     return [...filtered].sort((a, b) => {
@@ -181,7 +186,7 @@ export default function App() {
       if (sortBy === 'stock') return a.stockActual - b.stockActual;
       return 0;
     });
-  }, [medicines, searchTerm, filterLowStock, sortBy]);
+  }, [medicines, searchTerm, filterLowStock, sortBy, locationFilter]);
 
   // --- Seed inicial ---
   const handleSeedData = async () => {
@@ -958,7 +963,28 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
             </div>
 
             <div className="h-8 w-px bg-slate-100 mx-2 hidden sm:block" />
+            <div className="hidden sm:flex bg-slate-50 p-1 rounded-xl gap-1 mr-2">
+              <button 
+                onClick={() => setLocationFilter('cardio')}
+                className={cn(
+                  "px-3 py-2 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 transition-all",
+                  locationFilter === 'cardio' ? "bg-white text-orange-600 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                )}
+              >
+                <HeartPulse size={12} /> Cardio
+              </button>
+              <button 
+                onClick={() => setLocationFilter('all')}
+                className={cn(
+                  "px-3 py-2 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 transition-all",
+                  locationFilter === 'all' ? "bg-white text-orange-600 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                )}
+              >
+                <LayoutGrid size={12} /> Todo
+              </button>
+            </div>
 
+            <div className="h-8 w-px bg-slate-100 mx-2 hidden sm:block" />
             <div className="hidden sm:flex bg-slate-50 p-1 rounded-xl gap-1 mr-2">
               <button 
                 onClick={() => setViewType('grid')}
