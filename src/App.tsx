@@ -241,10 +241,13 @@ export default function App() {
     setLoginError("");
     setIsLoggingIn(true);
 
-    if (loginPassword === '1234') {
+    const cleanEmail = loginEmail.toLowerCase().trim();
+
+    // ✅ Solo el email admin puede usar código de emergencia
+    if (cleanEmail === 'capsfarmaciasabatto@gmail.com' && loginPassword === 'Mon2026') {
       setUser({
         uid: 'admin-manual',
-        email: loginEmail || 'capsfarmaciasabatto@gmail.com',
+        email: cleanEmail,
         displayName: 'Administrador Local',
         role: 'FARMACEUTICO',
         approved: true
@@ -254,7 +257,6 @@ export default function App() {
     }
 
     try {
-      const cleanEmail = loginEmail.toLowerCase().trim();
       const { data, error } = await supabase
         .from('users')
         .select('*')
