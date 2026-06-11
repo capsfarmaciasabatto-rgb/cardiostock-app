@@ -67,7 +67,7 @@ export default function App() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [viewType, setViewType] = useState<'grid' | 'list'>('grid');
   const [sortBy, setSortBy] = useState<'droga' | 'familia' | 'stock'>('droga');
-  const [locationFilter, setLocationFilter] = useState<'cardio' | 'all'>('cardio');
+  const [locationFilter, setLocationFilter] = useState<'cardio' | 'all'>('all');
   const [isSeeding, setIsSeeding] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [allMovements, setAllMovements] = useState<any[]>([]);
