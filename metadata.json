@@ -1,19 +1,8 @@
 {
   "name": "CardioStock - Gestión de Muestras",
-  "short_name": "CardioStock",
-  "description": "Aplicación para el inventario y registro de movimientos de muestras médicas cardiológicas en farmacia.",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#16a34a",
-  "icons": [
-    {
-      "src": "/icon.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
-  ],
+  "description": "Aplicación para el inventario, dispensas, inventario rotativo y control de vencimientos de muestras médicas en Farmacia Sabatto.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

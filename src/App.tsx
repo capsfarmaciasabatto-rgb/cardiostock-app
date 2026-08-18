@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from './lib/supabase'
 import { Medicine, Movement, MovementType, User, Batch, UserRole } from './types';
-import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check, Upload } from 'lucide-react';
+import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check, Upload, TrendingUp, CalendarDays, ClipboardCheck } from 'lucide-react';
+import { MostDispensedReport } from './components/MostDispensedReport';
+import { RotativeInventoryModal } from './components/RotativeInventoryModal';
+import { ExpirationAlerts } from './components/ExpirationAlerts';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import initialData from './data/inventory.json';
@@ -63,6 +66,8 @@ export default function App() {
   const [showEditBatchModal, setShowEditBatchModal] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showExpirationModal, setShowExpirationModal] = useState(false);
+  const [showMostDispensedModal, setShowMostDispensedModal] = useState(false);
+  const [showRotativeInventoryModal, setShowRotativeInventoryModal] = useState(false);
   const [showUsersModal, setShowUsersModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [viewType, setViewType] = useState<'grid' | 'list'>('grid');
@@ -104,19 +109,30 @@ export default function App() {
   // --- Verificar sesión al cargar ---
   useEffect(() => {
     const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        await loadUserFromSupabase(session.user.email!);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          await loadUserFromSupabase(session.user.email!);
+        }
+      } catch (err) {
+        // En caso de que no haya conexión a Supabase en preview
+        console.warn('Supabase auth no conectado:', err);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     checkSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        loadUserFromSupabase(session.user.email!);
-      } else {
-        setUser(null);
+      try {
+        if (session?.user) {
+          loadUserFromSupabase(session.user.email!);
+        } else {
+          setUser(null);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.warn('Error en auth state change:', err);
         setLoading(false);
       }
     });
@@ -125,37 +141,72 @@ export default function App() {
   }, []);
 
   const loadUserFromSupabase = async (email: string) => {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email.toLowerCase().trim())
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', email.toLowerCase().trim())
+        .single();
 
-    if (data && !error) {
-      setUser({
-        uid: data.id,
-        email: data.email,
-        displayName: data.display_name,
-        role: data.role,
-        approved: data.approved,
-        accessCode: data.access_code
-      });
+      if (data && !error) {
+        setUser({
+          uid: data.id,
+          email: data.email,
+          displayName: data.display_name,
+          role: data.role,
+          approved: data.approved,
+          accessCode: data.access_code
+        });
+      }
+    } catch (err) {
+      console.warn('No se pudo cargar usuario de Supabase:', err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   // --- Cargar medicamentos ---
   useEffect(() => {
     const fetchMedicines = async () => {
-      const { data, error } = await supabase
-        .from('medicines')
-        .select('*')
-        .order('droga', { ascending: true });
+      try {
+        const { data, error } = await supabase
+          .from('medicines')
+          .select('*')
+          .order('droga', { ascending: true });
 
-      if (error) {
-        console.error('Error al cargar medicamentos:', error);
-      } else {
-        setMedicines((data || []).map(toCamelCase));
+        if (error || !data) {
+          // Fallback al dataset local para modo preview o si no hay conexión a Supabase
+          const fallbackData = initialData.map((item, idx) => ({
+            id: `local-${idx}`,
+            droga: item.droga,
+            nombreComercial: item.nombreComercial,
+            presentacion: item.presentacion,
+            familia: item.familia,
+            ubicacion: item.ubicacion,
+            stockActual: item.stockActual ?? 0,
+            minStock: 5,
+            observaciones: item.observaciones,
+            fechaVencimiento: item.vencimiento
+          }));
+          setMedicines(fallbackData);
+        } else {
+          setMedicines((data || []).map(toCamelCase));
+        }
+      } catch (err) {
+        // En caso de TypeError: Failed to fetch (ej. sin claves de Supabase configuradas)
+        const fallbackData = initialData.map((item, idx) => ({
+          id: `local-${idx}`,
+          droga: item.droga,
+          nombreComercial: item.nombreComercial,
+          presentacion: item.presentacion,
+          familia: item.familia,
+          ubicacion: item.ubicacion,
+          stockActual: item.stockActual ?? 0,
+          minStock: 5,
+          observaciones: item.observaciones,
+          fechaVencimiento: item.vencimiento
+        }));
+        setMedicines(fallbackData);
       }
     };
     fetchMedicines();
@@ -670,92 +721,50 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
     return (
       <div className="min-h-screen bg-slate-200 flex flex-col items-center justify-center p-4 font-sans text-slate-800">
         <motion.div 
-          initial={{ opacity: 0, scale: 0.9 }}
+          initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="max-w-md w-full bg-white rounded-[4rem] shadow-2xl p-12 text-center border-4 border-white relative overflow-hidden ring-1 ring-slate-200"
+          className="max-w-sm w-full bg-white rounded-[3.5rem] shadow-2xl p-10 text-center border-4 border-white relative overflow-hidden ring-1 ring-slate-200"
         >
           <div className="absolute top-0 right-0 w-32 h-32 bg-orange-50 rounded-full -mr-16 -mt-16 blur-2xl opacity-50" />
 
-          <div className="w-24 h-24 bg-slate-50 rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-sm">
-            <HeartPulse className="text-orange-500 w-12 h-12" />
+          <div className="w-20 h-20 bg-slate-50 rounded-[1.8rem] flex items-center justify-center mx-auto mb-6 shadow-sm">
+            <HeartPulse className="text-orange-500 w-10 h-10" />
           </div>
-          <h1 className="text-5xl font-black text-slate-800 mb-2 uppercase tracking-tighter">SABATTO</h1>
-          <p className="text-orange-500 font-black uppercase tracking-[0.2em] text-[10px] mb-4">Farmacia Especializada</p>
+          <h1 className="text-4xl font-black text-slate-800 mb-1 uppercase tracking-tight">SABATTO</h1>
+          <p className="text-orange-500 font-black uppercase tracking-[0.2em] text-[10px] mb-8">Farmacia Especializada</p>
 
-          <AnimatePresence mode="wait">
-            {!manualLogin ? (
-              <motion.div
-                key="google"
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                className="space-y-4"
-              >
-                <p className="text-slate-400 font-medium leading-relaxed mb-10 text-sm">Gestión inteligente de muestras cardiológicas para profesionales de la salud.</p>
-                <button 
-                  onClick={handleSignIn}
-                  disabled={isLoggingIn}
-                  className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-5 rounded-2xl transition-all shadow-xl active:scale-95 disabled:opacity-50 flex items-center justify-center gap-3 mb-6"
-                >
-                  <LogIn size={20} />
-                  {isLoggingIn ? 'Iniciando...' : 'Entrar con Google'}
-                </button>
-                <button 
-                  onClick={() => setManualLogin(true)}
-                  className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-orange-500 transition-colors"
-                >
-                  O usar Usuario y Contraseña
-                </button>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="manual"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-              >
-                <form onSubmit={handleManualLogin} className="space-y-4">
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-4">Email de Usuario</label>
-                    <input 
-                      type="email"
-                      required
-                      value={loginEmail}
-                      onChange={e => setLoginEmail(e.target.value)}
-                      className="w-full bg-slate-100 border-none rounded-2xl px-6 py-4 font-bold text-sm focus:ring-2 focus:ring-orange-500 outline-none transition-colors border-2 border-transparent focus:border-white shadow-inner"
-                      placeholder="ejemplo@email.com"
-                    />
-                  </div>
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-4">Código de Acceso</label>
-                    <input 
-                      type="password"
-                      required
-                      value={loginPassword}
-                      onChange={e => setLoginPassword(e.target.value)}
-                      className="w-full bg-slate-100 border-none rounded-2xl px-6 py-4 font-bold text-sm focus:ring-2 focus:ring-orange-500 outline-none transition-colors border-2 border-transparent focus:border-white shadow-inner"
-                      placeholder="••••••••"
-                    />
-                  </div>
-                  {loginError && <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">{loginError}</p>}
-                  <button 
-                    type="submit"
-                    disabled={isLoggingIn}
-                    className="w-full bg-orange-500 hover:bg-orange-600 text-white font-black py-5 rounded-2xl transition-all shadow-xl shadow-orange-100 active:scale-95 mt-4"
-                  >
-                    {isLoggingIn ? 'Verificando...' : 'Entrar al Sistema'}
-                  </button>
-                  <button 
-                    type="button"
-                    onClick={() => setManualLogin(false)}
-                    className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-orange-500 transition-colors mt-4 block mx-auto"
-                  >
-                    Volver a Google
-                  </button>
-                </form>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <form onSubmit={handleManualLogin} className="space-y-4">
+            <div className="space-y-1.5 text-left">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-4">Email de Usuario</label>
+              <input 
+                type="email"
+                required
+                value={loginEmail}
+                onChange={e => setLoginEmail(e.target.value)}
+                className="w-full bg-slate-100 border-none rounded-2xl px-6 py-4 font-bold text-sm focus:ring-2 focus:ring-orange-500 outline-none transition-colors border-2 border-transparent focus:border-white shadow-inner"
+                placeholder="ejemplo@email.com"
+              />
+            </div>
+            <div className="space-y-1.5 text-left">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 ml-4">Código de Acceso</label>
+              <input 
+                type="password"
+                required
+                value={loginPassword}
+                onChange={e => setLoginPassword(e.target.value)}
+                className="w-full bg-slate-100 border-none rounded-2xl px-6 py-4 font-bold text-sm focus:ring-2 focus:ring-orange-500 outline-none transition-colors border-2 border-transparent focus:border-white shadow-inner"
+                placeholder="••••••••"
+              />
+            </div>
+            {loginError && <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">{loginError}</p>}
+            <button 
+              type="submit"
+              disabled={isLoggingIn}
+              className="w-full bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-2xl transition-all shadow-xl shadow-orange-100 active:scale-95 mt-2"
+            >
+              {isLoggingIn ? 'Verificando...' : 'Entrar al Sistema'}
+            </button>
+          </form>
         </motion.div>
       </div>
     );
@@ -833,9 +842,23 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
             <h2 className="text-3xl font-black text-slate-800 mb-2 tracking-tight">Inventario de Muestras</h2>
             <p className="text-slate-500 font-medium">Control de stock FEFO para cardiología.</p>
           </div>
-          <div className="flex flex-wrap gap-4">
+          <div className="flex flex-wrap gap-3">
             {isFarmaceutico && (
               <>
+                <button 
+                  onClick={() => setShowRotativeInventoryModal(true)}
+                  className="bg-orange-600 hover:bg-orange-700 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-orange-200/50 active:scale-95"
+                >
+                  <CalendarDays size={20} className="text-white" />
+                  Inventario Rotativo (L-V)
+                </button>
+                <button 
+                  onClick={() => setShowMostDispensedModal(true)}
+                  className="bg-white hover:bg-orange-50 text-slate-800 border-2 border-slate-200 hover:border-orange-200 px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-sm active:scale-95"
+                >
+                  <TrendingUp size={20} className="text-orange-500" />
+                  Más Dispensados
+                </button>
                 <button 
                   onClick={() => {
                     const doc = new jsPDF();
@@ -1433,6 +1456,65 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
         )}
       </AnimatePresence>
 
+            {/* MOST DISPENSED MODAL */}
+      <AnimatePresence>
+        {showMostDispensedModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowMostDispensedModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-6xl bg-white rounded-[3rem] shadow-2xl p-8 md:p-10 max-h-[90vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                   <div className="p-3 bg-orange-50 rounded-2xl text-orange-600">
+                     <TrendingUp size={24} />
+                   </div>
+                   <div>
+                     <h2 className="text-2xl md:text-3xl font-black text-slate-800 uppercase tracking-tight">Medicamentos Más Dispensados</h2>
+                     <p className="text-slate-400 font-medium text-xs">Ranking de demanda y estadísticas con exportación a Excel / PDF</p>
+                   </div>
+                </div>
+                <button onClick={() => setShowMostDispensedModal(false)} className="bg-slate-100 hover:bg-slate-200 p-2.5 rounded-full text-slate-400 hover:text-slate-700 transition-all"><X size={22} /></button>
+              </div>
+              <div className="overflow-y-auto flex-1 pr-2">
+                <MostDispensedReport medicines={medicines} />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ROTATIVE INVENTORY MODAL */}
+      <AnimatePresence>
+        {showRotativeInventoryModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowRotativeInventoryModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-6xl bg-white rounded-[3rem] shadow-2xl p-8 md:p-10 max-h-[90vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                   <div className="p-3 bg-orange-50 rounded-2xl text-orange-600">
+                     <CalendarDays size={24} />
+                   </div>
+                   <div>
+                     <h2 className="text-2xl md:text-3xl font-black text-slate-800 uppercase tracking-tight">Inventario Rotativo Diario (L-V)</h2>
+                     <p className="text-slate-400 font-medium text-xs">Control continuo de 15 a 20 medicamentos diarios para mantener el stock bajo control</p>
+                   </div>
+                </div>
+                <button onClick={() => setShowRotativeInventoryModal(false)} className="bg-slate-100 hover:bg-slate-200 p-2.5 rounded-full text-slate-400 hover:text-slate-700 transition-all"><X size={22} /></button>
+              </div>
+              <div className="overflow-y-auto flex-1 pr-2">
+                <RotativeInventoryModal 
+                  medicines={medicines} 
+                  isAdmin={isFarmaceutico || isTecnico}
+                  onOpenMovement={(m) => {
+                    setSelectedMedicine(m);
+                    setShowMovementModal(true);
+                  }}
+                />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* EXPIRATION MODAL */}
       <AnimatePresence>
         {showExpirationModal && (
@@ -1663,17 +1745,22 @@ function BatchList({ medicineId, isAdmin, onEdit }: { medicineId: string, isAdmi
 
   useEffect(() => {
     const fetchBatches = async () => {
-      const { data, error } = await supabase
-        .from('batches')
-        .select('*')
-        .eq('medicine_id', medicineId)
-        .gt('quantity', 0)
-        .order('vencimiento', { ascending: true });
+      try {
+        const { data, error } = await supabase
+          .from('batches')
+          .select('*')
+          .eq('medicine_id', medicineId)
+          .gt('quantity', 0)
+          .order('vencimiento', { ascending: true });
 
-      if (!error && data) {
-        setBatches(data);
+        if (!error && data) {
+          setBatches(data);
+        }
+      } catch (err) {
+        console.warn('Error al cargar lotes:', err);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     fetchBatches();
   }, [medicineId]);
@@ -1713,94 +1800,6 @@ function BatchList({ medicineId, isAdmin, onEdit }: { medicineId: string, isAdmi
   );
 }
 
-function ExpirationAlerts({ medicines }: { medicines: Medicine[] }) {
-  const [allBatches, setAllBatches] = useState<(Batch & { medicine: Medicine })[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let isMounted = true;
-    const fetchAll = async () => {
-      const results: (Batch & { medicine: Medicine })[] = [];
-
-      for (const m of medicines) {
-        const { data: snap } = await supabase
-          .from('batches')
-          .select('*')
-          .eq('medicine_id', m.id)
-          .gt('quantity', 0);
-
-        if (snap) {
-          snap.forEach((d: any) => {
-            results.push({ ...d, medicine: m } as any);
-          });
-        }
-      }
-
-      if (isMounted) {
-        const sorted = results.sort((a, b) => a.vencimiento.localeCompare(b.vencimiento));
-        const ninetyDaysFromNow = new Date();
-        ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90);
-        const limitStr = ninetyDaysFromNow.toISOString().substring(0, 7);
-        const upcoming = sorted.filter(b => b.vencimiento <= limitStr);
-        setAllBatches(upcoming);
-        setLoading(false);
-      }
-    };
-
-    fetchAll();
-    return () => { isMounted = false; };
-  }, [medicines]);
-
-  if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Analizando fechas de vencimiento...</div>;
-
-  return (
-    <div className="space-y-4">
-      {allBatches.length > 0 ? allBatches.map(b => {
-        const isExpired = b.vencimiento <= new Date().toISOString().substring(0, 7);
-        return (
-          <div key={`${b.medicine.id}-${b.id}`} className={cn(
-            "p-8 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-xl",
-            isExpired ? "bg-red-50" : "bg-amber-50/50"
-          )}>
-            <div className="flex items-center gap-4">
-               <div className={cn("p-3 rounded-2xl", isExpired ? "bg-red-100 text-red-600" : "bg-amber-100 text-amber-600")}>
-                 <Calendar size={20} />
-               </div>
-               <div>
-                 <p className="text-xs font-black text-slate-800 uppercase leading-none mb-1">{b.medicine.droga}</p>
-                 <p className="text-[10px] font-bold text-slate-400 italic mb-1">{b.medicine.nombreComercial}</p>
-                 <div className="flex items-center gap-2">
-                    <span className={cn("text-[10px] font-black uppercase px-2 py-0.5 rounded", isExpired ? "bg-red-600 text-white" : "bg-amber-500 text-white")}>
-                      {isExpired ? 'VENCIDO' : 'PRÓXIMO'}
-                    </span>
-                    <span className="text-[10px] font-bold text-slate-500">Lote: {b.id.substring(0, 8)}</span>
-                 </div>
-               </div>
-            </div>
-
-            <div className="flex-1 md:text-center">
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Vencimiento</p>
-               <p className={cn("font-black text-lg", isExpired ? "text-red-600" : "text-amber-600")}>{b.vencimiento}</p>
-            </div>
-
-            <div className="text-right">
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Stock en Lote</p>
-               <p className="font-black text-slate-700 text-lg leading-none">{b.quantity}</p>
-            </div>
-          </div>
-        );
-      }) : (
-        <div className="py-20 text-center">
-          <div className="w-16 h-16 bg-orange-50 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Package size={32} />
-          </div>
-          <p className="text-slate-300 font-bold uppercase tracking-widest text-[10px]">No hay vencimientos próximos detectados</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function AuditLog() {
   const [movements, setMovements] = useState<any[]>([]);
   const [startDate, setStartDate] = useState('');
@@ -1809,20 +1808,25 @@ function AuditLog() {
 
   useEffect(() => {
     const fetchMovements = async () => {
-      const { data, error } = await supabase
-        .from('movements')
-        .select(`
-          *,
-          medicines (
-            droga
-          )
-        `)
-        .order('created_at', { ascending: false });
+      try {
+        const { data, error } = await supabase
+          .from('movements')
+          .select(`
+            *,
+            medicines (
+              droga
+            )
+          `)
+          .order('created_at', { ascending: false });
 
-      if (!error && data) {
-        setMovements(data);
+        if (!error && data) {
+          setMovements(data);
+        }
+      } catch (err) {
+        console.warn('Error al cargar auditoría:', err);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     fetchMovements();
   }, []);

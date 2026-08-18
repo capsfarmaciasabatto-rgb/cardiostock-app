@@ -10,11 +10,13 @@ export interface Medicine {
   observaciones: string;
   minStock?: number;
   stockActual: number;
+  fechaVencimiento?: string;
   updatedAt?: Timestamp;
 }
 
 export interface Batch {
   id: string;
+  medicineId?: string;
   vencimiento: string; // Format YYYY-MM
   quantity: number;
   updatedAt?: Timestamp;
