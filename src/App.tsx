@@ -165,35 +165,16 @@ export default function App() {
     }
   };
 
-  // --- Cargar medicamentos ---
-  useEffect(() => {
-    const fetchMedicines = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('medicines')
-          .select('*')
-          .order('droga', { ascending: true });
+  // --- Cargar medicamentos con stock real sincronizado con lotes ---
+  const fetchMedicines = async () => {
+    try {
+      const { data: medsData, error: medsError } = await supabase
+        .from('medicines')
+        .select('*')
+        .order('droga', { ascending: true });
 
-        if (error || !data) {
-          // Fallback al dataset local para modo preview o si no hay conexión a Supabase
-          const fallbackData = initialData.map((item, idx) => ({
-            id: `local-${idx}`,
-            droga: item.droga,
-            nombreComercial: item.nombreComercial,
-            presentacion: item.presentacion,
-            familia: item.familia,
-            ubicacion: item.ubicacion,
-            stockActual: item.stockActual ?? 0,
-            minStock: 5,
-            observaciones: item.observaciones,
-            fechaVencimiento: item.vencimiento
-          }));
-          setMedicines(fallbackData);
-        } else {
-          setMedicines((data || []).map(toCamelCase));
-        }
-      } catch (err) {
-        // En caso de TypeError: Failed to fetch (ej. sin claves de Supabase configuradas)
+      if (medsError || !medsData) {
+        // Fallback al dataset local para modo preview
         const fallbackData = initialData.map((item, idx) => ({
           id: `local-${idx}`,
           droga: item.droga,
@@ -207,8 +188,51 @@ export default function App() {
           fechaVencimiento: item.vencimiento
         }));
         setMedicines(fallbackData);
+        return;
       }
-    };
+
+      // Obtener todos los lotes con stock para calcular el total exacto por medicamento
+      const { data: batchesData } = await supabase
+        .from('batches')
+        .select('medicine_id, quantity')
+        .gt('quantity', 0);
+
+      const batchStockMap = new Map<string, number>();
+      if (batchesData) {
+        batchesData.forEach((b: any) => {
+          const current = batchStockMap.get(b.medicine_id) || 0;
+          batchStockMap.set(b.medicine_id, current + (Number(b.quantity) || 0));
+        });
+      }
+
+      const mapped = (medsData || []).map(raw => {
+        const item = toCamelCase(raw);
+        // Si hay lotes cargados en la tabla 'batches', el stock total real es la suma de los lotes
+        if (batchStockMap.has(item.id)) {
+          item.stockActual = batchStockMap.get(item.id)!;
+        }
+        return item;
+      });
+
+      setMedicines(mapped);
+    } catch (err) {
+      const fallbackData = initialData.map((item, idx) => ({
+        id: `local-${idx}`,
+        droga: item.droga,
+        nombreComercial: item.nombreComercial,
+        presentacion: item.presentacion,
+        familia: item.familia,
+        ubicacion: item.ubicacion,
+        stockActual: item.stockActual ?? 0,
+        minStock: 5,
+        observaciones: item.observaciones,
+        fechaVencimiento: item.vencimiento
+      }));
+      setMedicines(fallbackData);
+    }
+  };
+
+  useEffect(() => {
     fetchMedicines();
   }, []);
 
@@ -459,24 +483,44 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
   const handleUpdateBatch = async (batchId: string, quantity: number, vencimiento: string) => {
     if (!user || !selectedMedicine) return;
     try {
-      const { error } = await supabase
+      // 1. Actualizar el lote específico en la tabla 'batches'
+      const { error: batchErr } = await supabase
+        .from('batches')
+        .update({ 
+          quantity: quantity, 
+          vencimiento: vencimiento 
+        })
+        .eq('id', batchId);
+
+      if (batchErr) throw batchErr;
+
+      // 2. Recalcular el stock total sumando todos los lotes activos de este medicamento
+      const { data: allMedBatches } = await supabase
+        .from('batches')
+        .select('quantity')
+        .eq('medicine_id', selectedMedicine.id)
+        .gt('quantity', 0);
+
+      const totalBatchStock = (allMedBatches || []).reduce((acc, b) => acc + (Number(b.quantity) || 0), 0);
+
+      // 3. Sincronizar en la tabla 'medicines'
+      await supabase
         .from('medicines')
         .update({ 
-          stock_actual: quantity, 
+          stock_actual: totalBatchStock, 
           fecha_vencimiento: vencimiento 
         })
         .eq('id', selectedMedicine.id);
 
-      if (error) throw error;
-
       setShowEditBatchModal(false);
       setEditingBatch(null);
 
-      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines((updatedList || []).map(toCamelCase));
+      await fetchMedicines();
+      // Actualizar selectedMedicine para reflejar el stock inmediato en el modal
+      setSelectedMedicine(prev => prev ? { ...prev, stockActual: totalBatchStock } : null);
     } catch (error) {
       console.error(error);
-      alert('Error al actualizar el stock.');
+      alert('Error al actualizar el stock del lote.');
     }
   };
 
@@ -634,8 +678,7 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
 
       await supabase.from('medicines').update({ stock_actual: newStock }).eq('id', selectedMedicine.id);
 
-      const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-      setMedicines((updatedList || []).map(toCamelCase));
+      await fetchMedicines();
 
       setShowMovementModal(false);
       setTimeout(() => setSelectedMedicine(null), 200);
