@@ -1,15 +1,27 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from './lib/supabase'
 import { Medicine, Movement, MovementType, User, Batch, UserRole } from './types';
-import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check, Upload, TrendingUp, CalendarDays, ClipboardCheck } from 'lucide-react';
+import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check, Upload, TrendingUp, CalendarDays, ClipboardCheck, UserCheck, HeartHandshake, Hourglass, BarChart3, Sparkles } from 'lucide-react';
 import { MostDispensedReport } from './components/MostDispensedReport';
 import { RotativeInventoryModal } from './components/RotativeInventoryModal';
 import { ExpirationAlerts } from './components/ExpirationAlerts';
+import { OperatorAuditReport } from './components/OperatorAuditReport';
+import { DonationBalanceReport } from './components/DonationBalanceReport';
+import { DormantSamplesReport } from './components/DormantSamplesReport';
+import { PharmacistReportsHubModal, ReportTab } from './components/PharmacistReportsHubModal';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import initialData from './data/inventory.json';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { 
+  getLocalMedicines, 
+  saveLocalMedicines, 
+  getLocalBatches, 
+  saveLocalBatches, 
+  getLocalMovements, 
+  saveLocalMovement 
+} from './lib/storage';
 
 // ============================================================
 // TIPOS AUXILIARES
@@ -68,6 +80,11 @@ export default function App() {
   const [showExpirationModal, setShowExpirationModal] = useState(false);
   const [showMostDispensedModal, setShowMostDispensedModal] = useState(false);
   const [showRotativeInventoryModal, setShowRotativeInventoryModal] = useState(false);
+  const [showOperatorAuditModal, setShowOperatorAuditModal] = useState(false);
+  const [showDonationBalanceModal, setShowDonationBalanceModal] = useState(false);
+  const [showDormantSamplesModal, setShowDormantSamplesModal] = useState(false);
+  const [showReportsHubModal, setShowReportsHubModal] = useState(false);
+  const [reportsHubInitialTab, setReportsHubInitialTab] = useState<ReportTab>('operator-audit');
   const [showUsersModal, setShowUsersModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [viewType, setViewType] = useState<'grid' | 'list'>('grid');
@@ -88,6 +105,8 @@ export default function App() {
   const [pendingUser, setPendingUser] = useState<any>(null);
   const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
   const [editingBatch, setEditingBatch] = useState<Batch | null>(null);
+  const [batchRefreshKey, setBatchRefreshKey] = useState(0);
+  const [isUpdatingBatch, setIsUpdatingBatch] = useState(false);
 
   // Form states for new medicine
   const [newMedicine, setNewMedicine] = useState<Partial<Medicine>>({
@@ -173,20 +192,9 @@ export default function App() {
         .select('*')
         .order('droga', { ascending: true });
 
-      if (medsError || !medsData) {
-        // Fallback al dataset local para modo preview
-        const fallbackData = initialData.map((item, idx) => ({
-          id: `local-${idx}`,
-          droga: item.droga,
-          nombreComercial: item.nombreComercial,
-          presentacion: item.presentacion,
-          familia: item.familia,
-          ubicacion: item.ubicacion,
-          stockActual: item.stockActual ?? 0,
-          minStock: 5,
-          observaciones: item.observaciones,
-          fechaVencimiento: item.vencimiento
-        }));
+      if (medsError || !medsData || medsData.length === 0) {
+        // Fallback al dataset local persistente para no perder ajustes
+        const fallbackData = getLocalMedicines();
         setMedicines(fallbackData);
         return;
       }
@@ -214,20 +222,10 @@ export default function App() {
         return item;
       });
 
+      saveLocalMedicines(mapped);
       setMedicines(mapped);
     } catch (err) {
-      const fallbackData = initialData.map((item, idx) => ({
-        id: `local-${idx}`,
-        droga: item.droga,
-        nombreComercial: item.nombreComercial,
-        presentacion: item.presentacion,
-        familia: item.familia,
-        ubicacion: item.ubicacion,
-        stockActual: item.stockActual ?? 0,
-        minStock: 5,
-        observaciones: item.observaciones,
-        fechaVencimiento: item.vencimiento
-      }));
+      const fallbackData = getLocalMedicines();
       setMedicines(fallbackData);
     }
   };
@@ -414,23 +412,38 @@ const handleAddMedicine = async (e: React.FormEvent) => {
   if (!user) return;
   
   try {
-    const { error } = await supabase
-      .from('medicines')
-      .insert([{
-        droga: newMedicine.droga,
-        nombre_comercial: newMedicine.nombreComercial,
-        presentacion: newMedicine.presentacion,
-        familia: newMedicine.familia,
-        ubicacion: newMedicine.ubicacion,
-        min_stock: newMedicine.minStock || 0,
-        observaciones: newMedicine.observaciones,
-        stock_actual: 0
-      }]);
+    const newMedObj: Medicine = {
+      id: `med-${Date.now()}`,
+      droga: newMedicine.droga || '',
+      nombreComercial: newMedicine.nombreComercial || '',
+      presentacion: newMedicine.presentacion || '',
+      familia: newMedicine.familia || '',
+      ubicacion: newMedicine.ubicacion || '',
+      minStock: newMedicine.minStock || 0,
+      observaciones: newMedicine.observaciones || '',
+      stockActual: 0
+    };
 
-    if (error) {
-      console.error('Error Supabase:', error);
-      alert('Error al agregar: ' + error.message);
-      return;
+    const local = getLocalMedicines();
+    local.push(newMedObj);
+    saveLocalMedicines(local);
+    setMedicines([...local]);
+
+    try {
+      await supabase
+        .from('medicines')
+        .insert([{
+          droga: newMedicine.droga,
+          nombre_comercial: newMedicine.nombreComercial,
+          presentacion: newMedicine.presentacion,
+          familia: newMedicine.familia,
+          ubicacion: newMedicine.ubicacion,
+          min_stock: newMedicine.minStock || 0,
+          observaciones: newMedicine.observaciones,
+          stock_actual: 0
+        }]);
+    } catch (sErr) {
+      console.warn('Supabase insert diferido:', sErr);
     }
 
     setShowAddMedicineModal(false);
@@ -439,8 +452,6 @@ const handleAddMedicine = async (e: React.FormEvent) => {
       familia: '', ubicacion: '', observaciones: '', minStock: 0
     });
     
-    const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-    setMedicines(updatedList || []);
     alert('Medicamento agregado correctamente');
   } catch (error: any) {
     console.error(error);
@@ -453,26 +464,33 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
   if (!user || !editingMedicine) return;
   
   try {
-    const { error } = await supabase
-      .from('medicines')
-      .update({
-        droga: editingMedicine.droga,
-        nombre_comercial: editingMedicine.nombreComercial,
-        presentacion: editingMedicine.presentacion,
-        familia: editingMedicine.familia,
-        ubicacion: editingMedicine.ubicacion,
-        min_stock: editingMedicine.minStock || 0,
-        observaciones: editingMedicine.observaciones
-      })
-      .eq('id', editingMedicine.id);
+    const local = getLocalMedicines();
+    const idx = local.findIndex(m => m.id === editingMedicine.id);
+    if (idx !== -1) {
+      local[idx] = { ...local[idx], ...editingMedicine };
+      saveLocalMedicines(local);
+      setMedicines([...local]);
+    }
 
-    if (error) throw error;
+    try {
+      await supabase
+        .from('medicines')
+        .update({
+          droga: editingMedicine.droga,
+          nombre_comercial: editingMedicine.nombreComercial,
+          presentacion: editingMedicine.presentacion,
+          familia: editingMedicine.familia,
+          ubicacion: editingMedicine.ubicacion,
+          min_stock: editingMedicine.minStock || 0,
+          observaciones: editingMedicine.observaciones
+        })
+        .eq('id', editingMedicine.id);
+    } catch (sErr) {
+      console.warn('Supabase update diferido:', sErr);
+    }
     
     setShowEditMedicineModal(false);
     setEditingMedicine(null);
-    
-    const { data: updatedList } = await supabase.from('medicines').select('*').order('droga');
-    setMedicines(updatedList || []);
     alert('Medicamento actualizado correctamente');
   } catch (error: any) {
     console.error(error);
@@ -481,46 +499,54 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
 };
 
   const handleUpdateBatch = async (batchId: string, quantity: number, vencimiento: string) => {
-    if (!user || !selectedMedicine) return;
+    if (!selectedMedicine) return;
+    setIsUpdatingBatch(true);
     try {
-      // 1. Actualizar el lote específico en la tabla 'batches'
-      const { error: batchErr } = await supabase
-        .from('batches')
-        .update({ 
-          quantity: quantity, 
-          vencimiento: vencimiento 
-        })
-        .eq('id', batchId);
+      // 1. Actualizar lotes en almacenamiento local
+      const localBatches = getLocalBatches();
+      const bIdx = localBatches.findIndex(b => b.id === batchId);
+      if (bIdx !== -1) {
+        localBatches[bIdx].quantity = quantity;
+        localBatches[bIdx].vencimiento = vencimiento;
+        saveLocalBatches(localBatches);
+      }
 
-      if (batchErr) throw batchErr;
+      const totalBatchStock = localBatches
+        .filter(b => b.medicineId === selectedMedicine.id && b.quantity > 0)
+        .reduce((acc, b) => acc + (Number(b.quantity) || 0), 0);
 
-      // 2. Recalcular el stock total sumando todos los lotes activos de este medicamento
-      const { data: allMedBatches } = await supabase
-        .from('batches')
-        .select('quantity')
-        .eq('medicine_id', selectedMedicine.id)
-        .gt('quantity', 0);
+      const localMeds = getLocalMedicines();
+      const updatedMeds = localMeds.map(m => m.id === selectedMedicine.id ? { ...m, stockActual: totalBatchStock } : m);
+      saveLocalMedicines(updatedMeds);
 
-      const totalBatchStock = (allMedBatches || []).reduce((acc, b) => acc + (Number(b.quantity) || 0), 0);
+      // Actualizar UI reactiva
+      setMedicines(updatedMeds);
+      setSelectedMedicine(prev => prev ? { ...prev, stockActual: totalBatchStock } : null);
+      setBatchRefreshKey(k => k + 1);
 
-      // 3. Sincronizar en la tabla 'medicines'
-      await supabase
-        .from('medicines')
-        .update({ 
-          stock_actual: totalBatchStock, 
-          fecha_vencimiento: vencimiento 
-        })
-        .eq('id', selectedMedicine.id);
+      // 2. Sincronizar en la base de datos Supabase si existe
+      try {
+        await supabase
+          .from('batches')
+          .update({ quantity: quantity, vencimiento: vencimiento })
+          .eq('id', batchId);
+
+        await supabase
+          .from('medicines')
+          .update({ stock_actual: totalBatchStock, fecha_vencimiento: vencimiento })
+          .eq('id', selectedMedicine.id);
+      } catch (sErr) {
+        console.warn('Supabase sync diferido para batch:', sErr);
+      }
 
       setShowEditBatchModal(false);
       setEditingBatch(null);
-
-      await fetchMedicines();
-      // Actualizar selectedMedicine para reflejar el stock inmediato en el modal
-      setSelectedMedicine(prev => prev ? { ...prev, stockActual: totalBatchStock } : null);
-    } catch (error) {
-      console.error(error);
-      alert('Error al actualizar el stock del lote.');
+      alert('¡Lote actualizado correctamente!');
+    } catch (error: any) {
+      console.error('Error al actualizar lote:', error);
+      alert('Error al actualizar el lote: ' + (error.message || 'Error desconocido'));
+    } finally {
+      setIsUpdatingBatch(false);
     }
   };
 
@@ -604,87 +630,156 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
     isAdjustment?: boolean, 
     justification?: string
   ) => {
-    if (!user || !selectedMedicine) return;
-    if (quantity <= 0) return;
+    if (!selectedMedicine) {
+      alert('No hay medicamento seleccionado.');
+      return;
+    }
+    if (quantity <= 0) {
+      alert('La cantidad debe ser mayor a 0.');
+      return;
+    }
 
     try {
-      const { error: movError } = await supabase.from('movements').insert({
-        medicine_id: selectedMedicine.id,
-        type,
-        quantity,
-        reason: isAdjustment ? 'Ajuste manual' : 'Registro manual',
-        is_adjustment: isAdjustment || false,
-        justification: justification || '',
-        user_email: user.email,
-        user_name: user.displayName || user.email
-      });
+      // 1. Calcular nuevo stock
+      let newStock = selectedMedicine.stockActual || 0;
 
-      if (movError) throw movError;
-
-      let newStock = selectedMedicine.stockActual;
       if (type === 'ingreso') {
         if (!expiry) {
           alert('Debe ingresar una fecha de vencimiento para el ingreso');
           return;
         }
         newStock += quantity;
+      } else {
+        if ((selectedMedicine.stockActual || 0) < quantity) {
+          alert(`No hay suficiente stock para descontar ${quantity} unidad(es). Stock disponible: ${selectedMedicine.stockActual}`);
+          return;
+        }
+        newStock = Math.max(0, (selectedMedicine.stockActual || 0) - quantity);
+      }
 
-        const { data: existingBatches } = await supabase
-          .from('batches')
-          .select('*')
-          .eq('medicine_id', selectedMedicine.id)
-          .eq('vencimiento', expiry);
+      // 2. Actualizar almacenamiento local INMEDIATAMENTE
+      const localMeds = getLocalMedicines();
+      const updatedLocalMeds = localMeds.map(m => m.id === selectedMedicine.id ? { ...m, stockActual: newStock } : m);
+      saveLocalMedicines(updatedLocalMeds);
 
-        if (existingBatches && existingBatches.length > 0) {
-          await supabase
-            .from('batches')
-            .update({ quantity: existingBatches[0].quantity + quantity })
-            .eq('id', existingBatches[0].id);
+      const localBatches = getLocalBatches();
+      if (type === 'ingreso' && expiry) {
+        const existing = localBatches.find(b => b.medicineId === selectedMedicine.id && b.vencimiento === expiry);
+        if (existing) {
+          existing.quantity += quantity;
         } else {
-          await supabase.from('batches').insert({
-            medicine_id: selectedMedicine.id,
+          localBatches.push({
+            id: `batch-${Date.now()}`,
+            medicineId: selectedMedicine.id,
             vencimiento: expiry,
             quantity: quantity
           });
         }
       } else {
-        if (selectedMedicine.stockActual < quantity) {
-          alert('No hay stock suficiente');
-          return;
-        }
-        newStock -= quantity;
+        let remainingToDeduct = quantity;
+        const medBatches = localBatches
+          .filter(b => b.medicineId === selectedMedicine.id && b.quantity > 0)
+          .sort((a, b) => a.vencimiento.localeCompare(b.vencimiento));
 
-        const { data: batches } = await supabase
-          .from('batches')
-          .select('*')
-          .eq('medicine_id', selectedMedicine.id)
-          .gt('quantity', 0)
-          .order('vencimiento', { ascending: true });
-
-        if (batches) {
-          let remainingToDeduct = quantity;
-          for (const batch of batches) {
-            if (remainingToDeduct === 0) break;
-            if (batch.quantity <= remainingToDeduct) {
-              await supabase.from('batches').update({ quantity: 0 }).eq('id', batch.id);
-              remainingToDeduct -= batch.quantity;
-            } else {
-              await supabase.from('batches').update({ quantity: batch.quantity - remainingToDeduct }).eq('id', batch.id);
-              remainingToDeduct = 0;
-            }
+        for (const b of medBatches) {
+          if (remainingToDeduct === 0) break;
+          const currentBatchQty = Number(b.quantity) || 0;
+          if (currentBatchQty <= remainingToDeduct) {
+            b.quantity = 0;
+            remainingToDeduct -= currentBatchQty;
+          } else {
+            b.quantity = currentBatchQty - remainingToDeduct;
+            remainingToDeduct = 0;
           }
         }
       }
+      saveLocalBatches(localBatches);
 
-      await supabase.from('medicines').update({ stock_actual: newStock }).eq('id', selectedMedicine.id);
+      saveLocalMovement({
+        medicine_id: selectedMedicine.id,
+        medicine_name: selectedMedicine.droga,
+        type,
+        quantity,
+        reason: isAdjustment ? `Ajuste manual: ${justification || 'Inventario'}` : (type === 'ingreso' ? 'Ingreso' : 'Dispensa'),
+        is_adjustment: isAdjustment || false,
+        justification: justification || '',
+        user_email: user?.email || 'anon@caps.local',
+        user_name: user?.displayName || user?.email || 'Personal Farmacia'
+      });
 
-      await fetchMedicines();
+      // 3. Refrescar estados de la interfaz reactiva al instante
+      setMedicines(updatedLocalMeds);
+      setSelectedMedicine(prev => prev ? { ...prev, stockActual: newStock } : null);
+      setBatchRefreshKey(k => k + 1);
+
+      // 4. Intentar guardar en Supabase en segundo plano si está disponible
+      try {
+        await supabase.from('movements').insert({
+          medicine_id: selectedMedicine.id,
+          type,
+          quantity,
+          reason: isAdjustment ? `Ajuste manual: ${justification || 'Sin justificación'}` : 'Registro manual',
+          is_adjustment: isAdjustment || false,
+          justification: justification || '',
+          user_email: user?.email || 'anon@caps.local',
+          user_name: user?.displayName || user?.email || 'Personal Farmacia'
+        });
+
+        await supabase.from('medicines').update({ stock_actual: newStock }).eq('id', selectedMedicine.id);
+
+        if (type === 'ingreso' && expiry) {
+          const { data: existingBatches } = await supabase
+            .from('batches')
+            .select('*')
+            .eq('medicine_id', selectedMedicine.id)
+            .eq('vencimiento', expiry);
+
+          if (existingBatches && existingBatches.length > 0) {
+            await supabase
+              .from('batches')
+              .update({ quantity: (existingBatches[0].quantity || 0) + quantity })
+              .eq('id', existingBatches[0].id);
+          } else {
+            await supabase.from('batches').insert({
+              medicine_id: selectedMedicine.id,
+              vencimiento: expiry,
+              quantity: quantity
+            });
+          }
+        } else {
+          const { data: batches } = await supabase
+            .from('batches')
+            .select('*')
+            .eq('medicine_id', selectedMedicine.id)
+            .gt('quantity', 0)
+            .order('vencimiento', { ascending: true });
+
+          if (batches && batches.length > 0) {
+            let remainingToDeduct = quantity;
+            for (const batch of batches) {
+              if (remainingToDeduct === 0) break;
+              const currentBatchQty = Number(batch.quantity) || 0;
+              if (currentBatchQty <= remainingToDeduct) {
+                await supabase.from('batches').update({ quantity: 0 }).eq('id', batch.id);
+                remainingToDeduct -= currentBatchQty;
+              } else {
+                await supabase.from('batches').update({ quantity: currentBatchQty - remainingToDeduct }).eq('id', batch.id);
+                remainingToDeduct = 0;
+              }
+            }
+          }
+        }
+      } catch (cloudErr) {
+        console.warn('Sync diferido en Supabase:', cloudErr);
+      }
+
+      alert(isAdjustment ? `¡Ajuste de inventario registrado correctamente! Nuevo stock: ${newStock}` : (type === 'ingreso' ? '¡Ingreso de stock registrado con éxito!' : '¡Dispensa registrada con éxito!'));
 
       setShowMovementModal(false);
       setTimeout(() => setSelectedMedicine(null), 200);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error en movimiento:', error);
-      alert('Error al registrar el movimiento.');
+      alert('Error al registrar: ' + (error.message || 'Error desconocido'));
     }
   };
 
@@ -889,6 +984,30 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
             {isFarmaceutico && (
               <>
                 <button 
+                  onClick={() => setShowOperatorAuditModal(true)}
+                  className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-slate-900/20 active:scale-95 border-2 border-slate-700"
+                  title="Auditoría de Movimientos por Operador / Técnico"
+                >
+                  <UserCheck size={20} className="text-orange-400" />
+                  Auditoría Operadores
+                </button>
+                <button 
+                  onClick={() => setShowDonationBalanceModal(true)}
+                  className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-emerald-700/25 active:scale-95"
+                  title="Balance de Ingresos vs Aprovechamiento - % Éxito de Donaciones"
+                >
+                  <HeartHandshake size={20} className="text-emerald-200" />
+                  Balance Donaciones (% Éxito)
+                </button>
+                <button 
+                  onClick={() => setShowDormantSamplesModal(true)}
+                  className="bg-amber-600 hover:bg-amber-700 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-amber-600/25 active:scale-95"
+                  title="Alerta de Muestras Dormidas / Sin Movimiento (+60/+90 días)"
+                >
+                  <Hourglass size={20} className="text-amber-200" />
+                  Muestras Dormidas (+60d)
+                </button>
+                <button 
                   onClick={() => setShowRotativeInventoryModal(true)}
                   className="bg-orange-600 hover:bg-orange-700 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-orange-200/50 active:scale-95"
                 >
@@ -949,7 +1068,7 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
                   className="bg-white text-slate-600 px-6 py-4 rounded-2xl font-bold border border-slate-200 flex items-center gap-2 hover:bg-slate-50 transition-all"
                 >
                   <History size={20} />
-                  Auditoría
+                  Auditoría General
                 </button>
                 <button 
                   onClick={() => setShowUsersModal(true)}
@@ -1214,7 +1333,7 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
       {/* MOVEMENT MODAL */}
       <AnimatePresence>
         {showMovementModal && selectedMedicine && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowMovementModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
             <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-4xl bg-white rounded-[3rem] shadow-2xl p-8 md:p-12 max-h-[90vh] overflow-hidden flex flex-col">
               <div className="flex justify-between items-start mb-10">
@@ -1222,7 +1341,7 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
                    <p className="text-xs font-black text-orange-500 uppercase tracking-widest">{selectedMedicine.nombreComercial}</p>
                    <h2 className="text-3xl font-black text-slate-800 uppercase">{selectedMedicine.droga}</h2>
                 </div>
-                <button onClick={() => setShowMovementModal(false)} className="bg-slate-100 p-2 rounded-full text-slate-400"><X size={24} /></button>
+                <button onClick={() => setShowMovementModal(false)} className="bg-slate-100 p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-all"><X size={24} /></button>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 overflow-y-auto">
@@ -1255,6 +1374,7 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
                    <BatchList 
                     medicineId={selectedMedicine.id} 
                     isAdmin={isFarmaceutico} 
+                    refreshKey={batchRefreshKey}
                     onEdit={(b) => {
                       setEditingBatch(b);
                       setShowEditBatchModal(true);
@@ -1334,36 +1454,75 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
       {/* EDIT BATCH MODAL */}
       <AnimatePresence>
         {showEditBatchModal && editingBatch && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowEditBatchModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => !isUpdatingBatch && setShowEditBatchModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
             <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-md bg-white rounded-[3rem] shadow-2xl p-10">
               <h2 className="text-2xl font-black text-slate-800 mb-6 uppercase">Corregir Lote</h2>
               <div className="space-y-6">
                 <div>
-                  <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Vencimiento (YYYY-MM)</label>
-                  <input 
-                    type="month"
-                    value={editingBatch.vencimiento ?? ''}
-                    onChange={e => setEditingBatch({...editingBatch, vencimiento: e.target.value})}
-                    className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 font-bold text-slate-700 mt-2 focus:ring-2 focus:ring-orange-500 outline-none"
-                  />
+                  <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Vencimiento (Mes / Año)</label>
+                  <div className="flex gap-2 mt-2">
+                    <select
+                      value={parseInt((editingBatch.vencimiento || '').split('-')[1] || '1')}
+                      onChange={e => {
+                        const mStr = e.target.value.padStart(2, '0');
+                        const yStr = (editingBatch.vencimiento || '').split('-')[0] || new Date().getFullYear().toString();
+                        setEditingBatch({ ...editingBatch, vencimiento: `${yStr}-${mStr}` });
+                      }}
+                      className="flex-[2] bg-slate-50 border-none rounded-2xl px-4 py-4 font-bold text-slate-700 focus:ring-2 focus:ring-orange-500 outline-none"
+                    >
+                      {[
+                        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+                      ].map((m, i) => (
+                        <option key={m} value={i + 1}>{m}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      placeholder="Año"
+                      value={parseInt((editingBatch.vencimiento || '').split('-')[0] || new Date().getFullYear().toString())}
+                      onChange={e => {
+                        const yVal = parseInt(e.target.value) || new Date().getFullYear();
+                        const mStr = (editingBatch.vencimiento || '').split('-')[1] || '01';
+                        setEditingBatch({ ...editingBatch, vencimiento: `${yVal}-${mStr}` });
+                      }}
+                      className="flex-1 bg-slate-50 border-none rounded-2xl px-4 py-4 font-bold text-slate-700 text-center focus:ring-2 focus:ring-orange-500 outline-none"
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Cantidad en Stock</label>
                   <input 
                     type="number"
+                    min="0"
                     value={editingBatch.quantity ?? 0}
                     onChange={e => setEditingBatch({...editingBatch, quantity: parseInt(e.target.value) || 0})}
                     className="w-full bg-slate-50 border-none rounded-2xl px-5 py-4 font-bold text-slate-700 mt-2 focus:ring-2 focus:ring-orange-500 outline-none"
                   />
                 </div>
                 <div className="flex gap-4 pt-4">
-                   <button type="button" onClick={() => setShowEditBatchModal(false)} className="flex-1 py-4 font-bold text-slate-400">Cancelar</button>
                    <button 
-                    onClick={() => handleUpdateBatch(editingBatch.id, editingBatch.quantity, editingBatch.vencimiento)}
-                    className="flex-[2] bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-100"
+                    type="button" 
+                    disabled={isUpdatingBatch}
+                    onClick={() => setShowEditBatchModal(false)} 
+                    className="flex-1 py-4 font-bold text-slate-400 hover:text-slate-600 transition-colors disabled:opacity-50"
                    >
-                     Guardar
+                     Cancelar
+                   </button>
+                   <button 
+                    disabled={isUpdatingBatch}
+                    onClick={() => handleUpdateBatch(editingBatch.id, editingBatch.quantity, editingBatch.vencimiento)}
+                    className="flex-[2] bg-orange-600 hover:bg-orange-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-100 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                   >
+                     {isUpdatingBatch ? (
+                       <>
+                         <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                         Guardando...
+                       </>
+                     ) : (
+                       'Guardar'
+                     )}
                    </button>
                 </div>
               </div>
@@ -1499,7 +1658,93 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
         )}
       </AnimatePresence>
 
-            {/* MOST DISPENSED MODAL */}
+            {/* OPERATOR AUDIT REPORT MODAL (A) */}
+      <AnimatePresence>
+        {showOperatorAuditModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowOperatorAuditModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="relative w-full max-w-7xl bg-white rounded-[3rem] shadow-2xl p-6 sm:p-10 max-h-[92vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                   <div className="p-3 bg-slate-900 rounded-2xl text-orange-400">
+                     <UserCheck size={24} />
+                   </div>
+                   <div>
+                     <h2 className="text-2xl md:text-3xl font-black text-slate-800 uppercase tracking-tight">Auditoría por Operador / Técnico</h2>
+                     <p className="text-slate-400 font-medium text-xs">Registro detallado de acciones, ingresos, dispensas y ajustes por usuario</p>
+                   </div>
+                </div>
+                <button onClick={() => setShowOperatorAuditModal(false)} className="bg-slate-100 hover:bg-slate-200 p-2.5 rounded-full text-slate-400 hover:text-slate-700 transition-all"><X size={22} /></button>
+              </div>
+              <div className="overflow-y-auto flex-1 pr-2">
+                <OperatorAuditReport medicines={medicines} onClose={() => setShowOperatorAuditModal(false)} />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* DONATION BALANCE REPORT MODAL (B) */}
+      <AnimatePresence>
+        {showDonationBalanceModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDonationBalanceModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="relative w-full max-w-7xl bg-white rounded-[3rem] shadow-2xl p-6 sm:p-10 max-h-[92vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                   <div className="p-3 bg-emerald-50 rounded-2xl text-emerald-600">
+                     <HeartHandshake size={24} />
+                   </div>
+                   <div>
+                     <h2 className="text-2xl md:text-3xl font-black text-slate-800 uppercase tracking-tight">Balance de Ingresos vs. Aprovechamiento</h2>
+                     <p className="text-slate-400 font-medium text-xs">Tasa de éxito social y efectividad del banco de muestras del CAPS</p>
+                   </div>
+                </div>
+                <button onClick={() => setShowDonationBalanceModal(false)} className="bg-slate-100 hover:bg-slate-200 p-2.5 rounded-full text-slate-400 hover:text-slate-700 transition-all"><X size={22} /></button>
+              </div>
+              <div className="overflow-y-auto flex-1 pr-2">
+                <DonationBalanceReport medicines={medicines} onClose={() => setShowDonationBalanceModal(false)} />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* DORMANT SAMPLES REPORT MODAL (C) */}
+      <AnimatePresence>
+        {showDormantSamplesModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowDormantSamplesModal(false)} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" />
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} className="relative w-full max-w-7xl bg-white rounded-[3rem] shadow-2xl p-6 sm:p-10 max-h-[92vh] flex flex-col">
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                   <div className="p-3 bg-amber-50 rounded-2xl text-amber-600">
+                     <Hourglass size={24} />
+                   </div>
+                   <div>
+                     <h2 className="text-2xl md:text-3xl font-black text-slate-800 uppercase tracking-tight">Alerta de Muestras Dormidas / Sin Rotación</h2>
+                     <p className="text-slate-400 font-medium text-xs">Detección temprana de muestras médicas sin movimiento en 60 o 90 días</p>
+                   </div>
+                </div>
+                <button onClick={() => setShowDormantSamplesModal(false)} className="bg-slate-100 hover:bg-slate-200 p-2.5 rounded-full text-slate-400 hover:text-slate-700 transition-all"><X size={22} /></button>
+              </div>
+              <div className="overflow-y-auto flex-1 pr-2">
+                <DormantSamplesReport medicines={medicines} onClose={() => setShowDormantSamplesModal(false)} />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* PHARMACIST REPORTS HUB MODAL */}
+      <PharmacistReportsHubModal
+        isOpen={showReportsHubModal}
+        onClose={() => setShowReportsHubModal(false)}
+        medicines={medicines}
+        initialTab={reportsHubInitialTab}
+      />
+
+      {/* MOST DISPENSED MODAL */}
       <AnimatePresence>
         {showMostDispensedModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1684,12 +1929,13 @@ function InputGroup({ label, value, onChange, placeholder, required, type = "tex
   );
 }
 
-function MovementForm({ type, title, onConfirm }: { type: MovementType, title: string, onConfirm: (q: number, e?: string, isAdj?: boolean, just?: string) => void }) {
+function MovementForm({ type, title, onConfirm }: { type: MovementType, title: string, onConfirm: (q: number, e?: string, isAdj?: boolean, just?: string) => Promise<void> | void }) {
   const [quantity, setQuantity] = useState("1");
   const [expiryMonth, setExpiryMonth] = useState(new Date().getMonth() + 1);
   const [expiryYear, setExpiryYear] = useState(new Date().getFullYear());
   const [isAdjustment, setIsAdjustment] = useState(false);
   const [justification, setJustification] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const isIngreso = type === 'ingreso';
 
   const months = [
@@ -1697,19 +1943,26 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
   ];
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     const q = parseInt(quantity);
     if (isNaN(q) || q <= 0) {
       alert("Ingrese una cantidad válida");
       return;
     }
 
-    if (isIngreso) {
-      const formattedMonth = expiryMonth.toString().padStart(2, '0');
-      const expiry = `${expiryYear}-${formattedMonth}`;
-      onConfirm(q, expiry, isAdjustment, justification);
-    } else {
-      onConfirm(q, undefined, isAdjustment, justification);
+    setIsSubmitting(true);
+    try {
+      if (isIngreso) {
+        const formattedMonth = expiryMonth.toString().padStart(2, '0');
+        const expiry = `${expiryYear}-${formattedMonth}`;
+        await onConfirm(q, expiry, isAdjustment, justification);
+      } else {
+        await onConfirm(q, undefined, isAdjustment, justification);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -1720,9 +1973,9 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
         <div className="space-y-2">
           <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Cantidad</label>
           <div className="flex items-center gap-3">
-              <button type="button" onClick={() => setQuantity(q => Math.max(1, parseInt(q || "0") - 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform"><Minus size={16} /></button>
-              <input type="number" value={quantity ?? ''} onChange={e => setQuantity(e.target.value)} className="flex-1 bg-white rounded-xl py-3 text-center font-black text-lg focus:outline-none shadow-sm" />
-              <button type="button" onClick={() => setQuantity(q => (parseInt(q || "0") + 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform"><Plus size={16} /></button>
+              <button type="button" disabled={isSubmitting} onClick={() => setQuantity(q => Math.max(1, parseInt(q || "0") - 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform disabled:opacity-50"><Minus size={16} /></button>
+              <input type="number" min="1" disabled={isSubmitting} value={quantity ?? ''} onChange={e => setQuantity(e.target.value)} className="flex-1 bg-white rounded-xl py-3 text-center font-black text-lg focus:outline-none shadow-sm" />
+              <button type="button" disabled={isSubmitting} onClick={() => setQuantity(q => (parseInt(q || "0") + 1).toString())} className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform disabled:opacity-50"><Plus size={16} /></button>
           </div>
         </div>
 
@@ -1731,6 +1984,7 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
             <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Vencimiento (Mes / Año)</label>
             <div className="flex gap-2">
               <select 
+                disabled={isSubmitting}
                 value={expiryMonth ?? 1} 
                 onChange={e => setExpiryMonth(parseInt(e.target.value))}
                 className="flex-[2] bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 outline-none"
@@ -1740,6 +1994,7 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
                 ))}
               </select>
               <input 
+                disabled={isSubmitting}
                 type="number" 
                 placeholder="Año"
                 value={expiryYear ?? new Date().getFullYear()}
@@ -1751,14 +2006,17 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
         )}
 
         <div className="pt-2">
-          <label className="flex items-center gap-3 cursor-pointer group">
+          <label 
+            onClick={() => !isSubmitting && setIsAdjustment(!isAdjustment)}
+            className="flex items-center gap-3 cursor-pointer group select-none"
+          >
             <div className={cn(
               "w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all",
               isAdjustment ? "bg-red-500 border-red-500 text-white" : "border-slate-200 bg-white group-hover:border-slate-300"
-            )} onClick={() => setIsAdjustment(!isAdjustment)}>
+            )}>
               {isAdjustment && <X size={14} className="stroke-[4]" />}
             </div>
-            <span className="text-[10px] uppercase font-black tracking-widest text-slate-500">¿Es un ajuste de inventario?</span>
+            <span className="text-[10px] uppercase font-black tracking-widest text-slate-500 group-hover:text-slate-800 transition-colors">¿Es un ajuste de inventario?</span>
           </label>
         </div>
 
@@ -1766,6 +2024,7 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
           <div className="space-y-2">
             <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Justificación del ajuste</label>
             <textarea 
+              disabled={isSubmitting}
               value={justification}
               onChange={e => setJustification(e.target.value)}
               placeholder="Ej: Faltante detectado, rotura, sobra de stock..."
@@ -1774,15 +2033,32 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
           </div>
         )}
 
-        <button onClick={handleConfirm} className={cn("w-full py-4 rounded-2xl font-black text-white shadow-lg transition-all active:scale-95 mt-2", isIngreso ? "bg-orange-500 shadow-orange-50 hover:bg-orange-600" : "bg-amber-500 shadow-amber-50 hover:bg-amber-600")}>
-          Confirmar {isAdjustment ? 'AJUSTE' : (isIngreso ? 'Ingreso' : 'Dispensa')}
+        <button 
+          type="button"
+          disabled={isSubmitting}
+          onClick={handleConfirm} 
+          className={cn(
+            "w-full py-4 rounded-2xl font-black text-white shadow-lg transition-all active:scale-95 mt-2 flex items-center justify-center gap-2 disabled:opacity-50",
+            isIngreso 
+              ? "bg-orange-500 shadow-orange-50 hover:bg-orange-600" 
+              : (isAdjustment ? "bg-red-500 shadow-red-100 hover:bg-red-600" : "bg-amber-500 shadow-amber-50 hover:bg-amber-600")
+          )}
+        >
+          {isSubmitting ? (
+            <>
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+              <span>Procesando...</span>
+            </>
+          ) : (
+            <span>Confirmar {isAdjustment ? 'AJUSTE' : (isIngreso ? 'Ingreso' : 'Dispensa')}</span>
+          )}
         </button>
       </div>
     </div>
   );
 }
 
-function BatchList({ medicineId, isAdmin, onEdit }: { medicineId: string, isAdmin?: boolean, onEdit?: (b: Batch) => void }) {
+function BatchList({ medicineId, isAdmin, onEdit, refreshKey }: { medicineId: string, isAdmin?: boolean, onEdit?: (b: Batch) => void, refreshKey?: number }) {
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -1796,17 +2072,24 @@ function BatchList({ medicineId, isAdmin, onEdit }: { medicineId: string, isAdmi
           .gt('quantity', 0)
           .order('vencimiento', { ascending: true });
 
-        if (!error && data) {
+        if (!error && data && data.length > 0) {
           setBatches(data);
+          setLoading(false);
+          return;
         }
       } catch (err) {
-        console.warn('Error al cargar lotes:', err);
-      } finally {
-        setLoading(false);
+        console.warn('Error al cargar lotes desde Supabase:', err);
       }
+
+      // Fallback a lotes locales
+      const local = getLocalBatches()
+        .filter(b => b.medicineId === medicineId && b.quantity > 0)
+        .sort((a, b) => a.vencimiento.localeCompare(b.vencimiento));
+      setBatches(local);
+      setLoading(false);
     };
     fetchBatches();
-  }, [medicineId]);
+  }, [medicineId, refreshKey]);
 
   if (loading) return <div className="py-20 text-center animate-pulse text-slate-300 font-bold uppercase tracking-widest text-[10px]">Cargando lotes...</div>;
 
@@ -1862,14 +2145,19 @@ function AuditLog() {
           `)
           .order('created_at', { ascending: false });
 
-        if (!error && data) {
+        if (!error && data && data.length > 0) {
           setMovements(data);
+          setLoading(false);
+          return;
         }
       } catch (err) {
-        console.warn('Error al cargar auditoría:', err);
-      } finally {
-        setLoading(false);
+        console.warn('Error al cargar auditoría desde Supabase:', err);
       }
+
+      // Fallback a movimientos locales
+      const local = getLocalMovements();
+      setMovements(local);
+      setLoading(false);
     };
     fetchMovements();
   }, []);
