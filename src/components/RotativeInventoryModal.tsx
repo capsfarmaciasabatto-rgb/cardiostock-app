@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Medicine } from '../types';
 import { 
   CheckCircle2, 
@@ -12,12 +12,21 @@ import {
   SlidersHorizontal,
   ArrowRight,
   Sparkles,
-  ClipboardCheck
+  ClipboardCheck,
+  Trash2,
+  Clock,
+  ShieldCheck
 } from 'lucide-react';
 import { downloadCSV } from '../lib/exportHelpers';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { cn } from '../lib/utils';
+import { 
+  getLocalRotativeVerifications, 
+  saveLocalRotativeVerification, 
+  clearAllRotativeVerifications,
+  RotativeVerificationItem 
+} from '../lib/storage';
 
 interface RotativeInventoryModalProps {
   medicines: Medicine[];
@@ -43,9 +52,15 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
 
   const [selectedDayIndex, setSelectedDayIndex] = useState<number>(currentDayIndex);
   const [batchSize, setBatchSize] = useState<number>(18); // 15 to 20
-  const [verifiedMap, setVerifiedMap] = useState<Record<string, boolean>>({});
-  const [notesMap, setNotesMap] = useState<Record<string, string>>({});
+  const [verifications, setVerifications] = useState<Record<string, RotativeVerificationItem>>(() => getLocalRotativeVerifications());
   const [searchFilter, setSearchFilter] = useState<string>('');
+  const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
+
+  // Sync state if storage changes elsewhere
+  useEffect(() => {
+    const loaded = getLocalRotativeVerifications();
+    setVerifications(loaded);
+  }, []);
 
   // Sort medicines alphabetically by location or drug name for clean sequential rotation
   const sortedMedicines = useMemo(() => {
@@ -68,11 +83,16 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
     return selectedDayIndex % totalGroups;
   }, [selectedDayIndex, totalGroups]);
 
-  // Medicines for today's batch
-  const dailyMedicines = useMemo(() => {
-    const start = activeGroupIndex * batchSize;
+  // Helper to get medicines for any group index
+  const getGroupMedicines = (groupIndex: number) => {
+    const start = groupIndex * batchSize;
     const end = start + batchSize;
     return sortedMedicines.slice(start, end);
+  };
+
+  // Medicines for today's active batch
+  const dailyMedicines = useMemo(() => {
+    return getGroupMedicines(activeGroupIndex);
   }, [sortedMedicines, activeGroupIndex, batchSize]);
 
   // Filter within daily batch if searched
@@ -86,15 +106,47 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
     );
   }, [dailyMedicines, searchFilter]);
 
-  const verifiedCount = useMemo(() => {
-    return dailyMedicines.filter(m => verifiedMap[m.id]).length;
-  }, [dailyMedicines, verifiedMap]);
+  // Counts of verification
+  const dailyVerifiedCount = useMemo(() => {
+    return dailyMedicines.filter(m => verifications[m.id]?.verified).length;
+  }, [dailyMedicines, verifications]);
 
-  const toggleVerified = (medicineId: string) => {
-    setVerifiedMap(prev => ({
-      ...prev,
-      [medicineId]: !prev[medicineId]
-    }));
+  const totalVerifiedCount = useMemo(() => {
+    return sortedMedicines.filter(m => verifications[m.id]?.verified).length;
+  }, [sortedMedicines, verifications]);
+
+  // Toggle single item verification with persistent storage
+  const toggleVerified = (medicine: Medicine) => {
+    const currentItem = verifications[medicine.id];
+    const newVerified = !currentItem?.verified;
+
+    const updated = saveLocalRotativeVerification(medicine.id, newVerified, {
+      stockCounted: medicine.stockActual
+    });
+    setVerifications({ ...updated });
+  };
+
+  // Reset entire cycle with confirmation
+  const handleResetAll = () => {
+    clearAllRotativeVerifications();
+    setVerifications({});
+    setShowResetConfirm(false);
+  };
+
+  // Formatter for verification date/time
+  const formatVerifiedTime = (isoString?: string) => {
+    if (!isoString) return '';
+    try {
+      const d = new Date(isoString);
+      const today = new Date();
+      const isSameDay = d.toDateString() === today.toDateString();
+      if (isSameDay) {
+        return `Hoy ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      }
+      return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+    } catch {
+      return '';
+    }
   };
 
   const handleExportDailyCSV = () => {
@@ -111,21 +163,25 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
       "Conteo Físico Real",
       "Diferencia",
       "Estado de Control",
-      "Observaciones"
+      "Fecha Verificación"
     ];
 
-    const rows = dailyMedicines.map((m, idx) => [
-      idx + 1,
-      m.ubicacion || 'Sin asignar',
-      m.droga,
-      m.nombreComercial,
-      m.presentacion || '-',
-      m.stockActual,
-      verifiedMap[m.id] ? m.stockActual : '', // If verified, standard stock
-      '', // Blank for physical writing on sheet
-      verifiedMap[m.id] ? 'VERIFICADO' : 'PENDIENTE',
-      notesMap[m.id] || ''
-    ]);
+    const rows = dailyMedicines.map((m, idx) => {
+      const v = verifications[m.id];
+      const isV = !!v?.verified;
+      return [
+        idx + 1,
+        m.ubicacion || 'Sin asignar',
+        m.droga,
+        m.nombreComercial,
+        m.presentacion || '-',
+        m.stockActual,
+        isV ? m.stockActual : '',
+        '',
+        isV ? 'VERIFICADO OK' : 'PENDIENTE',
+        isV && v?.verifiedAt ? new Date(v.verifiedAt).toLocaleString() : ''
+      ];
+    });
 
     const dateStr = new Date().toISOString().split('T')[0];
     downloadCSV(`inventario_rotativo_${dayName}_${dateStr}`, headers, rows);
@@ -147,16 +203,19 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
     doc.text(`Jornada: ${dayName} (Lote de ${dailyMedicines.length} ítems) | Fecha: ${new Date().toLocaleDateString()}`, 14, 25);
     doc.text(`Responsable del Recuento: ___________________________`, 14, 31);
 
-    const tableData = dailyMedicines.map((m, idx) => [
-      (idx + 1).toString(),
-      m.ubicacion || '-',
-      m.droga,
-      m.nombreComercial,
-      m.stockActual.toString(),
-      "[   ]", // Box to write physical stock
-      "[   ]", // Box to write difference
-      verifiedMap[m.id] ? 'OK' : 'PND'
-    ]);
+    const tableData = dailyMedicines.map((m, idx) => {
+      const isV = !!verifications[m.id]?.verified;
+      return [
+        (idx + 1).toString(),
+        m.ubicacion || '-',
+        m.droga,
+        m.nombreComercial,
+        m.stockActual.toString(),
+        isV ? m.stockActual.toString() : "[   ]",
+        isV ? "0" : "[   ]",
+        isV ? 'VERIFICADO' : 'PENDIENTE'
+      ];
+    });
 
     autoTable(doc, {
       startY: 37,
@@ -173,7 +232,7 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
         4: { cellWidth: 22, halign: 'center', fontStyle: 'bold' },
         5: { cellWidth: 18, halign: 'center' },
         6: { cellWidth: 16, halign: 'center' },
-        7: { cellWidth: 16, halign: 'center' }
+        7: { cellWidth: 22, halign: 'center' }
       }
     });
 
@@ -188,35 +247,80 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <span className="text-[10px] font-black uppercase tracking-widest text-orange-500 flex items-center gap-1.5 mb-1">
-              <CalendarDays size={14} /> Control Cíclico Semanal (15 - 20 Medicamentos / Día)
+              <CalendarDays size={14} /> Control Cíclico Semanal Persistente (15 - 20 Medicamentos / Día)
             </span>
             <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
               Seleccione la Jornada de Auditoría
             </h3>
           </div>
 
-          {/* Batch size selector */}
-          <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-2xl border border-slate-200 shadow-sm">
-            <SlidersHorizontal size={14} className="text-slate-400" />
-            <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Ítems/día:</span>
-            <select
-              value={batchSize}
-              onChange={(e) => setBatchSize(parseInt(e.target.value))}
-              className="bg-transparent border-none text-xs font-black text-orange-600 focus:ring-0 cursor-pointer"
-            >
-              <option value={15}>15 medicamentos</option>
-              <option value={18}>18 medicamentos (Recomendado)</option>
-              <option value={20}>20 medicamentos</option>
-              <option value={25}>25 medicamentos</option>
-            </select>
+          <div className="flex items-center gap-3">
+            {/* Batch size selector */}
+            <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-2xl border border-slate-200 shadow-sm">
+              <SlidersHorizontal size={14} className="text-slate-400" />
+              <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Ítems/día:</span>
+              <select
+                value={batchSize}
+                onChange={(e) => setBatchSize(parseInt(e.target.value))}
+                className="bg-transparent border-none text-xs font-black text-orange-600 focus:ring-0 cursor-pointer"
+              >
+                <option value={15}>15 medicamentos</option>
+                <option value={18}>18 medicamentos (Recomendado)</option>
+                <option value={20}>20 medicamentos</option>
+                <option value={25}>25 medicamentos</option>
+              </select>
+            </div>
+
+            {/* Total verified badge & Reset */}
+            {totalVerifiedCount > 0 && (
+              <button
+                onClick={() => setShowResetConfirm(true)}
+                className="flex items-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-3 py-2 rounded-2xl text-[11px] font-black transition-all active:scale-95 shadow-sm"
+                title="Reiniciar marcas para comenzar un nuevo ciclo semanal completo"
+              >
+                <RotateCcw size={13} />
+                Reiniciar Ciclo
+              </button>
+            )}
           </div>
         </div>
+
+        {/* Reset Confirmation Alert */}
+        {showResetConfirm && (
+          <div className="bg-rose-100/80 border-2 border-rose-300 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-rose-950">
+            <div className="flex items-center gap-2.5">
+              <AlertCircle size={20} className="text-rose-600 shrink-0" />
+              <p className="text-xs font-bold">
+                ¿Desea reiniciar el ciclo y desmarcar todos los {totalVerifiedCount} medicamentos verificados para comenzar la nueva semana?
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={handleResetAll}
+                className="bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 rounded-xl font-black text-xs shadow-sm transition-all"
+              >
+                Sí, Reiniciar Todo
+              </button>
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                className="bg-white hover:bg-rose-50 text-slate-700 border border-slate-200 px-3 py-1.5 rounded-xl font-bold text-xs shadow-sm transition-all"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Days Buttons */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2">
           {DAYS_OF_WEEK.map((day) => {
             const isToday = currentDayIndex === day.index;
             const isSelected = selectedDayIndex === day.index;
+
+            // Calculate verified count for this specific day
+            const dayMeds = getGroupMedicines(day.index % totalGroups);
+            const dayDone = dayMeds.filter(m => verifications[m.id]?.verified).length;
+            const isDayComplete = dayDone === dayMeds.length && dayMeds.length > 0;
 
             return (
               <button
@@ -226,16 +330,37 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
                   "py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-wider flex flex-col items-center justify-center transition-all relative",
                   isSelected 
                     ? "bg-orange-600 text-white shadow-lg shadow-orange-100 scale-102" 
-                    : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200/80"
+                    : isDayComplete
+                      ? "bg-emerald-50 text-emerald-800 border-2 border-emerald-300 hover:bg-emerald-100"
+                      : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200/80"
                 )}
               >
-                <span>{day.label}</span>
-                <span className={cn(
-                  "text-[9px] font-bold tracking-tight mt-0.5",
-                  isSelected ? "text-orange-200" : "text-slate-400"
-                )}>
-                  Grupo #{day.index + 1}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span>{day.label}</span>
+                  {isDayComplete && (
+                    <CheckCircle2 size={13} className={isSelected ? "text-emerald-200" : "text-emerald-600"} />
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className={cn(
+                    "text-[9px] font-bold tracking-tight",
+                    isSelected ? "text-orange-200" : "text-slate-400"
+                  )}>
+                    Grupo #{day.index + 1}
+                  </span>
+                  <span className={cn(
+                    "text-[9px] font-black px-1.5 py-0.2 rounded-md",
+                    isSelected 
+                      ? "bg-orange-700/60 text-white" 
+                      : dayDone > 0 
+                        ? "bg-emerald-100 text-emerald-700" 
+                        : "bg-slate-100 text-slate-400"
+                  )}>
+                    {dayDone}/{dayMeds.length}
+                  </span>
+                </div>
+
                 {isToday && (
                   <span className="absolute -top-1.5 -right-1 bg-slate-900 text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-tighter shadow-sm">
                     Hoy
@@ -251,26 +376,30 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-6 rounded-[2rem] border-2 border-white shadow-md ring-1 ring-slate-100">
         <div className="flex items-center gap-4">
           <div className={cn(
-            "p-3 rounded-2xl flex items-center justify-center",
-            verifiedCount === dailyMedicines.length && dailyMedicines.length > 0 
-              ? "bg-emerald-100 text-emerald-600" 
-              : "bg-orange-100 text-orange-600"
+            "p-3 rounded-2xl flex items-center justify-center transition-all",
+            dailyVerifiedCount === dailyMedicines.length && dailyMedicines.length > 0 
+              ? "bg-emerald-100 text-emerald-600 ring-4 ring-emerald-50" 
+              : dailyVerifiedCount > 0
+                ? "bg-orange-100 text-orange-600"
+                : "bg-slate-100 text-slate-400"
           )}>
             <ClipboardCheck size={24} />
           </div>
           <div>
             <div className="flex items-center gap-2">
               <h4 className="font-black text-slate-800 text-base">
-                Progreso del Día: {verifiedCount} de {dailyMedicines.length} revisados
+                Progreso del Día: {dailyVerifiedCount} de {dailyMedicines.length} revisados
               </h4>
-              {verifiedCount === dailyMedicines.length && dailyMedicines.length > 0 && (
-                <span className="bg-emerald-500 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded-md shadow-sm">
-                  ¡Completo!
+              {dailyVerifiedCount === dailyMedicines.length && dailyMedicines.length > 0 && (
+                <span className="bg-emerald-500 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded-md shadow-sm flex items-center gap-1">
+                  <CheckCircle2 size={11} /> ¡Jornada Completa!
                 </span>
               )}
             </div>
-            <p className="text-xs text-slate-400 font-medium">
-              Total catálogo: {medicines.length} medicamentos repartidos en {totalGroups} ciclos.
+            <p className="text-xs text-slate-400 font-medium flex items-center gap-2">
+              <span>Total catálogo: {medicines.length} medicamentos en {totalGroups} ciclos.</span>
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-300" />
+              <span className="font-bold text-slate-600">Total ciclo verificado: {totalVerifiedCount}/{medicines.length}</span>
             </p>
           </div>
         </div>
@@ -319,14 +448,15 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
       <div className="space-y-3">
         {filteredDailyMedicines.length > 0 ? (
           filteredDailyMedicines.map((m, idx) => {
-            const isVerified = !!verifiedMap[m.id];
+            const verificationItem = verifications[m.id];
+            const isVerified = !!verificationItem?.verified;
 
             return (
               <div
                 key={m.id}
                 className={cn(
                   "p-6 rounded-[2.5rem] border-4 border-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all",
-                  isVerified ? "bg-emerald-50/50 ring-2 ring-emerald-200" : "bg-white hover:shadow-lg"
+                  isVerified ? "bg-emerald-50/70 ring-2 ring-emerald-300 shadow-emerald-100/50" : "bg-white hover:shadow-lg"
                 )}
               >
                 {/* Left info */}
@@ -343,6 +473,11 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
                       {m.ubicacion && (
                         <span className="inline-flex items-center gap-1 bg-orange-100 text-orange-700 text-[10px] font-black px-2 py-0.5 rounded-lg">
                           <MapPin size={11} /> {m.ubicacion}
+                        </span>
+                      )}
+                      {isVerified && (
+                        <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full shadow-xs">
+                          <ShieldCheck size={11} /> Guardado
                         </span>
                       )}
                     </div>
@@ -373,18 +508,25 @@ export function RotativeInventoryModal({ medicines, onOpenMovement, isAdmin }: R
                 {/* Actions & Verification */}
                 <div className="flex items-center gap-3 justify-end shrink-0">
                   {/* Mark as Verified Button */}
-                  <button
-                    onClick={() => toggleVerified(m.id)}
-                    className={cn(
-                      "px-4 py-2.5 rounded-2xl font-black text-xs flex items-center gap-2 transition-all active:scale-95 shadow-sm",
-                      isVerified
-                        ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-                        : "bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600"
+                  <div className="flex flex-col items-end gap-1">
+                    <button
+                      onClick={() => toggleVerified(m)}
+                      className={cn(
+                        "px-4 py-2.5 rounded-2xl font-black text-xs flex items-center gap-2 transition-all active:scale-95 shadow-sm",
+                        isVerified
+                          ? "bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-400"
+                          : "bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 border border-slate-200"
+                      )}
+                    >
+                      <CheckCircle2 size={16} className={isVerified ? "text-white" : "text-slate-400"} />
+                      {isVerified ? 'Verificado OK' : 'Confirmar Stock OK'}
+                    </button>
+                    {isVerified && verificationItem?.verifiedAt && (
+                      <span className="text-[9px] font-bold text-emerald-700 flex items-center gap-1 mr-1">
+                        <Clock size={10} /> {formatVerifiedTime(verificationItem.verifiedAt)}
+                      </span>
                     )}
-                  >
-                    <CheckCircle2 size={16} />
-                    {isVerified ? 'Verificado OK' : 'Confirmar Stock OK'}
-                  </button>
+                  </div>
 
                   {/* Adjust Difference button */}
                   {isAdmin && (

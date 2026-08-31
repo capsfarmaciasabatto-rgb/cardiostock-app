@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { getLocalMovements } from '../lib/storage';
+import { getLocalMovements, DEFAULT_CAPS_OPERATORS } from '../lib/storage';
 import { Medicine } from '../types';
 import { 
   UserCheck, 
@@ -18,7 +18,9 @@ import {
   User, 
   Activity,
   CheckCircle2,
-  Clock
+  Clock,
+  Sparkles,
+  Users
 } from 'lucide-react';
 import { downloadCSV } from '../lib/exportHelpers';
 import { jsPDF } from 'jspdf';
@@ -33,19 +35,125 @@ interface OperatorAuditReportProps {
 type DateRangeFilter = 'today' | '7days' | '30days' | 'thisMonth' | '90days' | 'all';
 type MovementTypeFilter = 'all' | 'ingreso' | 'dispensa' | 'ajuste';
 
+// Función auxiliar para normalizar nombres y correos de operadores del CAPS
+function resolveOperator(m: any, userMap: Map<string, any>): { name: string; email: string; shortName: string } {
+  const rawEmail = (m.user_email || m.userEmail || '').trim().toLowerCase();
+  const rawName = (m.user_name || m.userName || '').trim();
+  const rawId = (m.user_id || m.userId || '').trim();
+
+  // 1. Buscar en mapa de usuarios de Supabase
+  let email = rawEmail;
+  let name = rawName;
+
+  if (rawId && userMap.has(rawId)) {
+    const u = userMap.get(rawId);
+    if (!name || name === 'Personal Farmacia' || name === 'anon@caps.local' || name.includes('@')) {
+      name = u.displayName || u.display_name || u.email;
+    }
+    if (!email) email = (u.email || '').toLowerCase();
+  }
+
+  if (email && userMap.has(email)) {
+    const u = userMap.get(email);
+    if (!name || name === 'Personal Farmacia' || name === 'anon@caps.local' || name.includes('@')) {
+      name = u.displayName || u.display_name || u.email;
+    }
+  }
+
+  const combined = `${name} ${email} ${rawId}`.toLowerCase();
+
+  // 2. Detección inteligente por palabras clave para Caro, Gloria y el equipo de CAPS Sabatto
+  if (combined.includes('caro') || combined.includes('carolina')) {
+    return {
+      name: name && !name.includes('@') ? name : 'Téc. Carolina (Caro)',
+      email: email || 'caro.farmacia@caps.gob.ar',
+      shortName: 'Caro'
+    };
+  }
+
+  if (combined.includes('gloria')) {
+    return {
+      name: name && !name.includes('@') ? name : 'Téc. Gloria',
+      email: email || 'gloria.farmacia@caps.gob.ar',
+      shortName: 'Gloria'
+    };
+  }
+
+  if (combined.includes('sabatto') || combined.includes('capsfarmaciasabatto') || combined.includes('admin')) {
+    return {
+      name: 'Farm. Sabatto (Administrador)',
+      email: 'capsfarmaciasabatto@gmail.com',
+      shortName: 'Sabatto'
+    };
+  }
+
+  if (combined.includes('laura')) {
+    return {
+      name: 'Téc. Laura Méndez',
+      email: email || 'laura.mendez@caps.gob.ar',
+      shortName: 'Laura'
+    };
+  }
+
+  if (combined.includes('carlos')) {
+    return {
+      name: 'Téc. Carlos Benítez',
+      email: email || 'carlos.benitez@caps.gob.ar',
+      shortName: 'Carlos'
+    };
+  }
+
+  if (combined.includes('rossi') || combined.includes('alejandro')) {
+    return {
+      name: 'Dr. Alejandro Rossi',
+      email: email || 'arossi@caps.gob.ar',
+      shortName: 'Dr. Rossi'
+    };
+  }
+
+  return {
+    name: name || email || 'Personal de Farmacia',
+    email: email || 'personal@caps.local',
+    shortName: name ? name.split(' ')[0] : 'Operador'
+  };
+}
+
 export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportProps) {
   const [movements, setMovements] = useState<any[]>([]);
+  const [dbUsers, setDbUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedOperator, setSelectedOperator] = useState<string>('all');
-  const [dateRange, setDateRange] = useState<DateRangeFilter>('30days');
+  const [dateRange, setDateRange] = useState<DateRangeFilter>('all');
   const [movementType, setMovementType] = useState<MovementTypeFilter>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
 
   useEffect(() => {
-    const fetchMovements = async () => {
+    const fetchData = async () => {
       setLoading(true);
+      let usersList: any[] = [];
+      let movementsList: any[] = [];
+
+      // 1. Intentar cargar usuarios registrados de Supabase
       try {
-        const { data, error } = await supabase
+        const { data: uData } = await supabase.from('users').select('*');
+        if (uData && uData.length > 0) {
+          usersList = uData;
+          setDbUsers(uData);
+        }
+      } catch (uErr) {
+        console.warn('No se pudieron consultar usuarios en Supabase:', uErr);
+      }
+
+      // Mapa rápido de usuarios
+      const userMap = new Map<string, any>();
+      usersList.forEach(u => {
+        if (u.id) userMap.set(u.id, u);
+        if (u.email) userMap.set(u.email.toLowerCase(), u);
+      });
+
+      // 2. Intentar cargar movimientos de Supabase
+      try {
+        const { data: mData, error: mError } = await supabase
           .from('movements')
           .select(`
             *,
@@ -59,22 +167,43 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
           `)
           .order('created_at', { ascending: false });
 
-        if (!error && data && data.length > 0) {
-          setMovements(data);
-          setLoading(false);
-          return;
+        if (!mError && mData && mData.length > 0) {
+          movementsList = mData;
         }
-      } catch (err) {
-        console.warn('Error cargando movimientos de Supabase:', err);
+      } catch (mErr) {
+        console.warn('Error cargando movimientos de Supabase:', mErr);
       }
 
-      // Fallback a almacenamiento local persistente
+      // 3. Si no hay movimientos en Supabase o son pocos, fusionar / cargar de localStorage
       const local = getLocalMovements();
-      setMovements(local);
+      if (movementsList.length === 0) {
+        movementsList = local;
+      } else {
+        // En caso de que falten movimientos locales no sincronizados
+        const existingIds = new Set(movementsList.map(m => m.id));
+        local.forEach(loc => {
+          if (!existingIds.has(loc.id)) {
+            movementsList.push(loc);
+          }
+        });
+      }
+
+      // Normalizar operadores en todos los movimientos
+      const normalized = movementsList.map(m => {
+        const op = resolveOperator(m, userMap);
+        return {
+          ...m,
+          user_name: op.name,
+          user_email: op.email,
+          user_short: op.shortName
+        };
+      });
+
+      setMovements(normalized);
       setLoading(false);
     };
 
-    fetchMovements();
+    fetchData();
   }, []);
 
   // Quick medicine map for resolving names
@@ -84,18 +213,38 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
     return map;
   }, [medicines]);
 
-  // Lista única de operadores detectados
+  // Lista consolidada de operadores garantizando presencia de Caro, Gloria y equipo
   const operatorList = useMemo(() => {
-    const ops = new Map<string, { name: string; email: string }>();
-    movements.forEach(m => {
-      const email = m.user_email || 'anon@caps.local';
-      const name = m.user_name || email;
-      if (!ops.has(email)) {
-        ops.set(email, { name, email });
+    const ops = new Map<string, { name: string; email: string; shortName: string }>();
+
+    // 1. Añadir los operadores base del CAPS
+    DEFAULT_CAPS_OPERATORS.forEach(op => {
+      ops.set(op.email.toLowerCase(), { name: op.name, email: op.email.toLowerCase(), shortName: op.shortName });
+    });
+
+    // 2. Añadir usuarios de la base de datos
+    dbUsers.forEach(u => {
+      if (u.email) {
+        const e = u.email.toLowerCase();
+        const n = u.display_name || u.displayName || u.email;
+        if (!ops.has(e)) {
+          ops.set(e, { name: n, email: e, shortName: n.split(' ')[0] });
+        }
       }
     });
+
+    // 3. Añadir cualquier otro operador detectado en movimientos
+    movements.forEach(m => {
+      const email = (m.user_email || 'anon@caps.local').toLowerCase();
+      const name = m.user_name || email;
+      const shortName = m.user_short || name.split(' ')[0];
+      if (!ops.has(email)) {
+        ops.set(email, { name, email, shortName });
+      }
+    });
+
     return Array.from(ops.values());
-  }, [movements]);
+  }, [movements, dbUsers]);
 
   // Filtrado de movimientos
   const filteredMovements = useMemo(() => {
@@ -104,7 +253,11 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
       // 1. Filtro de operador
       if (selectedOperator !== 'all') {
         const email = (m.user_email || '').toLowerCase();
-        if (email !== selectedOperator.toLowerCase()) return false;
+        const name = (m.user_name || '').toLowerCase();
+        const sel = selectedOperator.toLowerCase();
+
+        const matches = email === sel || name === sel || email.includes(sel) || (sel.includes('caro') && (name.includes('caro') || email.includes('caro'))) || (sel.includes('gloria') && (name.includes('gloria') || email.includes('gloria')));
+        if (!matches) return false;
       }
 
       // 2. Filtro de tipo de movimiento
@@ -148,8 +301,9 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
         const reason = (m.reason || '').toLowerCase();
         const just = (m.justification || '').toLowerCase();
         const opName = (m.user_name || '').toLowerCase();
+        const opEmail = (m.user_email || '').toLowerCase();
 
-        const match = medName.includes(term) || medComercial.includes(term) || reason.includes(term) || just.includes(term) || opName.includes(term);
+        const match = medName.includes(term) || medComercial.includes(term) || reason.includes(term) || just.includes(term) || opName.includes(term) || opEmail.includes(term);
         if (!match) return false;
       }
 
@@ -198,7 +352,7 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
     };
   }, [filteredMovements]);
 
-  // Desglose por operador
+  // Desglose por operador (calculado sobre los movimientos filtrados por fecha y tipo)
   const operatorBreakdown = useMemo(() => {
     const map = new Map<string, {
       name: string;
@@ -210,8 +364,22 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
       totalUnits: number;
     }>();
 
+    // Inicializar con todos los operadores conocidos para que nadie falte
+    operatorList.forEach(op => {
+      map.set(op.email, {
+        name: op.name,
+        email: op.email,
+        totalOps: 0,
+        dispensas: 0,
+        ingresos: 0,
+        ajustes: 0,
+        totalUnits: 0
+      });
+    });
+
+    // Sumarizar según los movimientos filtrados
     filteredMovements.forEach(m => {
-      const email = m.user_email || 'anon@caps.local';
+      const email = (m.user_email || 'anon@caps.local').toLowerCase();
       const name = m.user_name || email;
       const qty = Number(m.quantity) || 0;
 
@@ -241,7 +409,7 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
     });
 
     return Array.from(map.values()).sort((a, b) => b.totalOps - a.totalOps);
-  }, [filteredMovements]);
+  }, [filteredMovements, operatorList]);
 
   // Exportar a CSV
   const handleExportCSV = () => {

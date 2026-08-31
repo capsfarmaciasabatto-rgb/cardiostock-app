@@ -4,7 +4,8 @@ import initialData from '../data/inventory.json';
 const STORAGE_KEYS = {
   MEDICINES: 'cardiostock_medicines_v2',
   BATCHES: 'cardiostock_batches_v2',
-  MOVEMENTS: 'cardiostock_movements_v2'
+  MOVEMENTS: 'cardiostock_movements_v2',
+  ROTATIVE_VERIFICATIONS: 'cardiostock_rotative_verifications_v2'
 };
 
 function normalizeVencimiento(raw: string): string {
@@ -113,25 +114,43 @@ export function saveLocalBatches(batches: Batch[]): void {
   }
 }
 
+export const DEFAULT_CAPS_OPERATORS = [
+  { name: 'Farm. Sabatto (Administrador)', email: 'capsfarmaciasabatto@gmail.com', role: 'FARMACEUTICO', shortName: 'Sabatto' },
+  { name: 'Téc. Carolina (Caro)', email: 'caro.farmacia@caps.gob.ar', role: 'TECNICO', shortName: 'Caro' },
+  { name: 'Téc. Gloria', email: 'gloria.farmacia@caps.gob.ar', role: 'TECNICO', shortName: 'Gloria' },
+  { name: 'Téc. Laura Méndez', email: 'laura.mendez@caps.gob.ar', role: 'TECNICO', shortName: 'Laura' },
+  { name: 'Téc. Carlos Benítez', email: 'carlos.benitez@caps.gob.ar', role: 'TECNICO', shortName: 'Carlos' },
+  { name: 'Dr. Alejandro Rossi', email: 'arossi@caps.gob.ar', role: 'MEDICO', shortName: 'Dr. Rossi' }
+];
+
 export function getLocalMovements(): any[] {
   try {
     const saved = localStorage.getItem(STORAGE_KEYS.MOVEMENTS);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Verificar si contiene movimientos de Caro o Gloria, si no, regenerar/enriquecer
+        const hasCaro = parsed.some(m => 
+          (m.user_name && m.user_name.toLowerCase().includes('caro')) ||
+          (m.user_email && m.user_email.toLowerCase().includes('caro'))
+        );
+        const hasGloria = parsed.some(m => 
+          (m.user_name && m.user_name.toLowerCase().includes('gloria')) ||
+          (m.user_email && m.user_email.toLowerCase().includes('gloria'))
+        );
+
+        if (hasCaro && hasGloria) {
+          return parsed;
+        }
+      }
     }
   } catch (err) {
     console.warn('Error reading movements from localStorage:', err);
   }
 
-  // Si no hay movimientos, generamos historial realista para informes
+  // Generar historial realista para todos los operadores del CAPS (incluyendo Caro y Gloria)
   const meds = getLocalMedicines();
-  const operators = [
-    { name: 'Farm. Sabatto (Administrador)', email: 'capsfarmaciasabatto@gmail.com', role: 'FARMACEUTICO' },
-    { name: 'Téc. Laura Méndez', email: 'laura.mendez@caps.gob.ar', role: 'TECNICO' },
-    { name: 'Téc. Carlos Benítez', email: 'carlos.benitez@caps.gob.ar', role: 'TECNICO' },
-    { name: 'Dr. Alejandro Rossi', email: 'arossi@caps.gob.ar', role: 'MEDICO' }
-  ];
+  const operators = DEFAULT_CAPS_OPERATORS;
 
   const now = new Date();
   const initialMovements: any[] = [];
@@ -139,7 +158,7 @@ export function getLocalMovements(): any[] {
   // Muestras ingresadas y dispensadas con fechas realistas (últimos 120 días)
   meds.forEach((med, idx) => {
     // 1. Ingreso inicial de muestra médica (donación)
-    const daysAgoEntry = 30 + (idx * 5) % 110;
+    const daysAgoEntry = 20 + (idx * 4) % 110;
     const entryDate = new Date(now.getTime() - daysAgoEntry * 24 * 60 * 60 * 1000);
     const entryQty = 20 + ((idx * 7) % 40);
     const opEntry = operators[idx % operators.length];
@@ -161,7 +180,7 @@ export function getLocalMovements(): any[] {
     // 2. Si NO es de los medicamentos que dejamos deliberadamente "dormidos" (idx 3, 7, 12, 18, 22), agregamos dispensas
     const isDormant = [3, 7, 12, 18, 22].includes(idx % 25);
     if (!isDormant) {
-      // Dispensas escalonadas
+      // Dispensas escalonadas rotando por todos los técnicos y médicos
       const dispCount = 2 + (idx % 4);
       for (let d = 0; d < dispCount; d++) {
         const daysAgoDisp = Math.max(1, daysAgoEntry - (d + 1) * 8 - (idx % 6));
@@ -185,11 +204,11 @@ export function getLocalMovements(): any[] {
       }
     }
 
-    // 3. Ajustes ocasionales de inventario
-    if (idx % 6 === 0) {
-      const daysAgoAdj = 15 + (idx % 30);
+    // 3. Ajustes ocasionales de inventario (auditoría / arqueos)
+    if (idx % 5 === 0) {
+      const daysAgoAdj = 10 + (idx % 30);
       const adjDate = new Date(now.getTime() - daysAgoAdj * 24 * 60 * 60 * 1000);
-      const opAdj = operators[0]; // Farmacéutico
+      const opAdj = operators[idx % 3]; // Rota entre Farm. Sabatto, Caro y Gloria
 
       initialMovements.push({
         id: `seed-adj-${idx}`,
@@ -232,3 +251,74 @@ export function saveLocalMovement(movement: any): void {
     console.warn('Error saving movement to localStorage:', err);
   }
 }
+
+export interface RotativeVerificationItem {
+  verified: boolean;
+  verifiedAt: string; // ISO date string
+  verifiedBy?: string;
+  stockCounted?: number;
+  notes?: string;
+}
+
+export function getLocalRotativeVerifications(): Record<string, RotativeVerificationItem> {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEYS.ROTATIVE_VERIFICATIONS);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object') {
+        // Normalizar en caso de que vinieran valores booleanos directos
+        const result: Record<string, RotativeVerificationItem> = {};
+        Object.keys(parsed).forEach(key => {
+          const val = parsed[key];
+          if (typeof val === 'boolean') {
+            result[key] = {
+              verified: val,
+              verifiedAt: new Date().toISOString()
+            };
+          } else if (val && typeof val === 'object') {
+            result[key] = val;
+          }
+        });
+        return result;
+      }
+    }
+  } catch (err) {
+    console.warn('Error loading rotative verifications:', err);
+  }
+  return {};
+}
+
+export function saveLocalRotativeVerification(
+  medicineId: string, 
+  verified: boolean, 
+  options?: { verifiedBy?: string; stockCounted?: number; notes?: string }
+): Record<string, RotativeVerificationItem> {
+  try {
+    const current = getLocalRotativeVerifications();
+    if (verified) {
+      current[medicineId] = {
+        verified: true,
+        verifiedAt: new Date().toISOString(),
+        verifiedBy: options?.verifiedBy,
+        stockCounted: options?.stockCounted,
+        notes: options?.notes
+      };
+    } else {
+      delete current[medicineId];
+    }
+    localStorage.setItem(STORAGE_KEYS.ROTATIVE_VERIFICATIONS, JSON.stringify(current));
+    return current;
+  } catch (err) {
+    console.warn('Error saving rotative verification:', err);
+    return {};
+  }
+}
+
+export function clearAllRotativeVerifications(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.ROTATIVE_VERIFICATIONS);
+  } catch (err) {
+    console.warn('Error clearing rotative verifications:', err);
+  }
+}
+
