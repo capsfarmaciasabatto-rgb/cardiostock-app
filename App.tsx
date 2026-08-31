@@ -628,7 +628,8 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
     quantity: number, 
     expiry?: string, 
     isAdjustment?: boolean, 
-    justification?: string
+    justification?: string,
+    brand?: string
   ) => {
     if (!selectedMedicine) {
       alert('No hay medicamento seleccionado.');
@@ -658,8 +659,13 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
       }
 
       // 2. Actualizar almacenamiento local INMEDIATAMENTE
+      const finalBrand = (brand || selectedMedicine.nombreComercial || '').trim();
       const localMeds = getLocalMedicines();
-      const updatedLocalMeds = localMeds.map(m => m.id === selectedMedicine.id ? { ...m, stockActual: newStock } : m);
+      let updatedLocalMeds = localMeds.map(m => m.id === selectedMedicine.id ? { 
+        ...m, 
+        stockActual: newStock,
+        nombreComercial: (finalBrand && (!m.nombreComercial || m.nombreComercial === '-')) ? finalBrand : m.nombreComercial
+      } : m);
       saveLocalMedicines(updatedLocalMeds);
 
       const localBatches = getLocalBatches();
@@ -698,9 +704,10 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
       saveLocalMovement({
         medicine_id: selectedMedicine.id,
         medicine_name: selectedMedicine.droga,
+        medicine_comercial_name: finalBrand || selectedMedicine.nombreComercial,
         type,
         quantity,
-        reason: isAdjustment ? `Ajuste manual: ${justification || 'Inventario'}` : (type === 'ingreso' ? 'Ingreso' : 'Dispensa'),
+        reason: isAdjustment ? `Ajuste manual: ${justification || 'Inventario'}` : (type === 'ingreso' ? (finalBrand ? `Ingreso muestra (${finalBrand})` : 'Ingreso') : 'Dispensa'),
         is_adjustment: isAdjustment || false,
         justification: justification || '',
         user_email: user?.email || 'anon@caps.local',
@@ -709,23 +716,31 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
 
       // 3. Refrescar estados de la interfaz reactiva al instante
       setMedicines(updatedLocalMeds);
-      setSelectedMedicine(prev => prev ? { ...prev, stockActual: newStock } : null);
+      setSelectedMedicine(prev => prev ? { 
+        ...prev, 
+        stockActual: newStock,
+        nombreComercial: (finalBrand && (!prev.nombreComercial || prev.nombreComercial === '-')) ? finalBrand : prev.nombreComercial
+      } : null);
       setBatchRefreshKey(k => k + 1);
 
       // 4. Intentar guardar en Supabase en segundo plano si está disponible
       try {
         await supabase.from('movements').insert({
           medicine_id: selectedMedicine.id,
+          medicine_comercial_name: finalBrand || selectedMedicine.nombreComercial,
           type,
           quantity,
-          reason: isAdjustment ? `Ajuste manual: ${justification || 'Sin justificación'}` : 'Registro manual',
+          reason: isAdjustment ? `Ajuste manual: ${justification || 'Sin justificación'}` : (type === 'ingreso' ? (finalBrand ? `Ingreso muestra (${finalBrand})` : 'Ingreso') : 'Dispensa'),
           is_adjustment: isAdjustment || false,
           justification: justification || '',
           user_email: user?.email || 'anon@caps.local',
           user_name: user?.displayName || user?.email || 'Personal Farmacia'
         });
 
-        await supabase.from('medicines').update({ stock_actual: newStock }).eq('id', selectedMedicine.id);
+        await supabase.from('medicines').update({ 
+          stock_actual: newStock,
+          ...(finalBrand && (!selectedMedicine.nombreComercial || selectedMedicine.nombreComercial === '-') ? { nombre_comercial: finalBrand } : {})
+        }).eq('id', selectedMedicine.id);
 
         if (type === 'ingreso' && expiry) {
           const { data: existingBatches } = await supabase
@@ -984,42 +999,32 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
             {isFarmaceutico && (
               <>
                 <button 
-                  onClick={() => setShowOperatorAuditModal(true)}
-                  className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-slate-900/20 active:scale-95 border-2 border-slate-700"
-                  title="Auditoría de Movimientos por Operador / Técnico"
+                  onClick={() => {
+                    setReportsHubInitialTab('demand-rotation');
+                    setShowReportsHubModal(true);
+                  }}
+                  className="bg-gradient-to-r from-orange-600 via-orange-500 to-amber-600 hover:from-orange-700 hover:to-amber-700 text-white px-6 py-4 rounded-2xl font-black flex items-center gap-2.5 transition-all shadow-xl shadow-orange-600/30 active:scale-95 border-2 border-orange-400/30"
+                  title="Centro Unificado de Informes: Demanda & Rotación APM, Auditoría por Operador, Balance de Donaciones, Muestras Dormidas"
                 >
-                  <UserCheck size={20} className="text-orange-400" />
-                  Auditoría Operadores
-                </button>
-                <button 
-                  onClick={() => setShowDonationBalanceModal(true)}
-                  className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-emerald-700/25 active:scale-95"
-                  title="Balance de Ingresos vs Aprovechamiento - % Éxito de Donaciones"
-                >
-                  <HeartHandshake size={20} className="text-emerald-200" />
-                  Balance Donaciones (% Éxito)
-                </button>
-                <button 
-                  onClick={() => setShowDormantSamplesModal(true)}
-                  className="bg-amber-600 hover:bg-amber-700 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-amber-600/25 active:scale-95"
-                  title="Alerta de Muestras Dormidas / Sin Movimiento (+60/+90 días)"
-                >
-                  <Hourglass size={20} className="text-amber-200" />
-                  Muestras Dormidas (+60d)
+                  <BarChart3 size={20} className="text-white" />
+                  <span>Centro de Informes</span>
+                  <span className="bg-white/20 text-white text-[10px] font-black uppercase px-2 py-0.5 rounded-md ml-1">
+                    5 Informes
+                  </span>
                 </button>
                 <button 
                   onClick={() => setShowRotativeInventoryModal(true)}
-                  className="bg-orange-600 hover:bg-orange-700 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-orange-200/50 active:scale-95"
+                  className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg shadow-slate-900/20 active:scale-95 border-2 border-slate-700"
                 >
-                  <CalendarDays size={20} className="text-white" />
+                  <CalendarDays size={20} className="text-orange-400" />
                   Inventario Rotativo (L-V)
                 </button>
                 <button 
-                  onClick={() => setShowMostDispensedModal(true)}
-                  className="bg-white hover:bg-orange-50 text-slate-800 border-2 border-slate-200 hover:border-orange-200 px-5 py-4 rounded-2xl font-black flex items-center gap-2 transition-all shadow-sm active:scale-95"
+                  onClick={() => setShowExpirationModal(true)}
+                  className="bg-white text-slate-700 px-5 py-4 rounded-2xl font-black border-2 border-slate-200 flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm active:scale-95"
                 >
-                  <TrendingUp size={20} className="text-orange-500" />
-                  Más Dispensados
+                  <Calendar size={20} className="text-amber-500" />
+                  Próximos Vencimientos
                 </button>
                 <button 
                   onClick={() => {
@@ -1051,28 +1056,14 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
                     });
                     doc.save(`inventario_${new Date().toISOString().split('T')[0]}.pdf`);
                   }}
-                  className="bg-slate-900 text-white px-6 py-4 rounded-2xl font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg"
+                  className="bg-white text-slate-700 px-5 py-4 rounded-2xl font-bold border-2 border-slate-200 flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm"
                 >
-                  <FileText size={20} />
-                  Exportar PDF Inventario
-                </button>
-                <button 
-                  onClick={() => setShowExpirationModal(true)}
-                  className="bg-white text-slate-600 px-6 py-4 rounded-2xl font-bold border border-slate-200 flex items-center gap-2 hover:bg-slate-50 transition-all"
-                >
-                  <Calendar size={20} className="text-amber-500" />
-                  Próximos Vencimientos
-                </button>
-                <button 
-                  onClick={() => setShowAuditModal(true)}
-                  className="bg-white text-slate-600 px-6 py-4 rounded-2xl font-bold border border-slate-200 flex items-center gap-2 hover:bg-slate-50 transition-all"
-                >
-                  <History size={20} />
-                  Auditoría General
+                  <FileText size={20} className="text-slate-500" />
+                  Exportar PDF
                 </button>
                 <button 
                   onClick={() => setShowUsersModal(true)}
-                  className="bg-slate-800 text-white px-6 py-4 rounded-2xl font-bold flex items-center gap-2 hover:bg-slate-700 transition-all shadow-lg"
+                  className="bg-slate-800 text-white px-5 py-4 rounded-2xl font-bold flex items-center gap-2 hover:bg-slate-700 transition-all shadow-lg"
                 >
                   <List size={20} className="text-orange-400" />
                   Usuarios
@@ -1351,7 +1342,8 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
                       <MovementForm 
                         type="ingreso" 
                         title="Ingreso de Stock" 
-                        onConfirm={(q, e, adj, just) => registerMovement('ingreso', q, e, adj, just)} 
+                        defaultBrand={selectedMedicine.nombreComercial}
+                        onConfirm={(q, e, adj, just, br) => registerMovement('ingreso', q, e, adj, just, br)} 
                       />
                       <MovementForm 
                         type="dispensa" 
@@ -1929,8 +1921,19 @@ function InputGroup({ label, value, onChange, placeholder, required, type = "tex
   );
 }
 
-function MovementForm({ type, title, onConfirm }: { type: MovementType, title: string, onConfirm: (q: number, e?: string, isAdj?: boolean, just?: string) => Promise<void> | void }) {
+function MovementForm({ 
+  type, 
+  title, 
+  defaultBrand,
+  onConfirm 
+}: { 
+  type: MovementType; 
+  title: string; 
+  defaultBrand?: string;
+  onConfirm: (q: number, e?: string, isAdj?: boolean, just?: string, brand?: string) => Promise<void> | void; 
+}) {
   const [quantity, setQuantity] = useState("1");
+  const [brand, setBrand] = useState(defaultBrand && defaultBrand !== '-' ? defaultBrand : "");
   const [expiryMonth, setExpiryMonth] = useState(new Date().getMonth() + 1);
   const [expiryYear, setExpiryYear] = useState(new Date().getFullYear());
   const [isAdjustment, setIsAdjustment] = useState(false);
@@ -1955,7 +1958,7 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
       if (isIngreso) {
         const formattedMonth = expiryMonth.toString().padStart(2, '0');
         const expiry = `${expiryYear}-${formattedMonth}`;
-        await onConfirm(q, expiry, isAdjustment, justification);
+        await onConfirm(q, expiry, isAdjustment, justification, brand);
       } else {
         await onConfirm(q, undefined, isAdjustment, justification);
       }
@@ -1980,29 +1983,47 @@ function MovementForm({ type, title, onConfirm }: { type: MovementType, title: s
         </div>
 
         {isIngreso && (
-          <div className="space-y-2">
-            <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Vencimiento (Mes / Año)</label>
-            <div className="flex gap-2">
-              <select 
-                disabled={isSubmitting}
-                value={expiryMonth ?? 1} 
-                onChange={e => setExpiryMonth(parseInt(e.target.value))}
-                className="flex-[2] bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 outline-none"
-              >
-                {months.map((m, i) => (
-                  <option key={m} value={i + 1}>{m}</option>
-                ))}
-              </select>
-              <input 
-                disabled={isSubmitting}
-                type="number" 
-                placeholder="Año"
-                value={expiryYear ?? new Date().getFullYear()}
-                onChange={e => setExpiryYear(parseInt(e.target.value))}
-                className="flex-1 bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 text-center outline-none"
-              />
+          <>
+            <div className="space-y-2">
+              <label className="text-[10px] uppercase font-black tracking-widest text-slate-400 ml-2">Vencimiento (Mes / Año)</label>
+              <div className="flex gap-2">
+                <select 
+                  disabled={isSubmitting}
+                  value={expiryMonth ?? 1} 
+                  onChange={e => setExpiryMonth(parseInt(e.target.value))}
+                  className="flex-[2] bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 outline-none"
+                >
+                  {months.map((m, i) => (
+                    <option key={m} value={i + 1}>{m}</option>
+                  ))}
+                </select>
+                <input 
+                  disabled={isSubmitting}
+                  type="number" 
+                  placeholder="Año"
+                  value={expiryYear ?? new Date().getFullYear()}
+                  onChange={e => setExpiryYear(parseInt(e.target.value))}
+                  className="flex-1 bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 text-center outline-none"
+                />
+              </div>
             </div>
-          </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between ml-2">
+                <label className="text-[10px] uppercase font-black tracking-widest text-slate-400">Marca / Laboratorio</label>
+                <span className="text-[9px] font-bold text-orange-600 uppercase bg-orange-100/80 px-2 py-0.5 rounded-full">Para APM / Muestras</span>
+              </div>
+              <input
+                disabled={isSubmitting}
+                type="text"
+                value={brand}
+                onChange={e => setBrand(e.target.value)}
+                placeholder={defaultBrand && defaultBrand !== '-' ? `Ej: ${defaultBrand}` : "Ej: Roemmers, Baliarda, Bagó, Casasco, Montpellier..."}
+                className="w-full bg-white rounded-xl py-3 px-4 font-bold text-sm shadow-sm border-none focus:ring-2 focus:ring-orange-500 outline-none text-slate-800 placeholder:text-slate-300"
+              />
+              <p className="text-[10px] text-slate-400 ml-2 font-medium">Registra el laboratorio o marca comercial de la muestra recibida.</p>
+            </div>
+          </>
         )}
 
         <div className="pt-2">
