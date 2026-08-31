@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { getLocalMovements, DEFAULT_CAPS_OPERATORS } from '../lib/storage';
+import { getLocalMovements } from '../lib/storage';
 import { Medicine } from '../types';
 import { 
   UserCheck, 
@@ -35,86 +35,44 @@ interface OperatorAuditReportProps {
 type DateRangeFilter = 'today' | '7days' | '30days' | 'thisMonth' | '90days' | 'all';
 type MovementTypeFilter = 'all' | 'ingreso' | 'dispensa' | 'ajuste';
 
-// Función auxiliar para normalizar nombres y correos de operadores del CAPS
+// Función auxiliar para normalizar nombres y correos de operadores del CAPS usando la base real de Supabase
 function resolveOperator(m: any, userMap: Map<string, any>): { name: string; email: string; shortName: string } {
   const rawEmail = (m.user_email || m.userEmail || '').trim().toLowerCase();
   const rawName = (m.user_name || m.userName || '').trim();
   const rawId = (m.user_id || m.userId || '').trim();
 
-  // 1. Buscar en mapa de usuarios de Supabase
   let email = rawEmail;
   let name = rawName;
 
+  // 1. Buscar coincidencia exacta por ID en Supabase
   if (rawId && userMap.has(rawId)) {
     const u = userMap.get(rawId);
-    if (!name || name === 'Personal Farmacia' || name === 'anon@caps.local' || name.includes('@')) {
-      name = u.displayName || u.display_name || u.email;
-    }
+    name = u.display_name || u.displayName || u.email || name;
     if (!email) email = (u.email || '').toLowerCase();
   }
 
+  // 2. Buscar coincidencia exacta por Email en Supabase
   if (email && userMap.has(email)) {
     const u = userMap.get(email);
-    if (!name || name === 'Personal Farmacia' || name === 'anon@caps.local' || name.includes('@')) {
-      name = u.displayName || u.display_name || u.email;
+    name = u.display_name || u.displayName || u.email || name;
+    email = (u.email || email).toLowerCase();
+  }
+
+  // 3. Formatear nombre legible
+  if (!name || name === 'Personal Farmacia' || name === 'anon@caps.local') {
+    if (email && email.includes('@')) {
+      name = email.split('@')[0];
+    } else {
+      name = 'Personal Farmacia';
     }
   }
 
-  const combined = `${name} ${email} ${rawId}`.toLowerCase();
-
-  // 2. Detección inteligente por palabras clave para Caro, Gloria y el equipo de CAPS Sabatto
-  if (combined.includes('caro') || combined.includes('carolina')) {
-    return {
-      name: name && !name.includes('@') ? name : 'Téc. Carolina (Caro)',
-      email: email || 'caro.farmacia@caps.gob.ar',
-      shortName: 'Caro'
-    };
-  }
-
-  if (combined.includes('gloria')) {
-    return {
-      name: name && !name.includes('@') ? name : 'Téc. Gloria',
-      email: email || 'gloria.farmacia@caps.gob.ar',
-      shortName: 'Gloria'
-    };
-  }
-
-  if (combined.includes('sabatto') || combined.includes('capsfarmaciasabatto') || combined.includes('admin')) {
-    return {
-      name: 'Farm. Sabatto (Administrador)',
-      email: 'capsfarmaciasabatto@gmail.com',
-      shortName: 'Sabatto'
-    };
-  }
-
-  if (combined.includes('laura')) {
-    return {
-      name: 'Téc. Laura Méndez',
-      email: email || 'laura.mendez@caps.gob.ar',
-      shortName: 'Laura'
-    };
-  }
-
-  if (combined.includes('carlos')) {
-    return {
-      name: 'Téc. Carlos Benítez',
-      email: email || 'carlos.benitez@caps.gob.ar',
-      shortName: 'Carlos'
-    };
-  }
-
-  if (combined.includes('rossi') || combined.includes('alejandro')) {
-    return {
-      name: 'Dr. Alejandro Rossi',
-      email: email || 'arossi@caps.gob.ar',
-      shortName: 'Dr. Rossi'
-    };
-  }
+  const shortName = name.split(' ')[0] || 'Operador';
 
   return {
-    name: name || email || 'Personal de Farmacia',
-    email: email || 'personal@caps.local',
-    shortName: name ? name.split(' ')[0] : 'Operador'
+    name,
+    email: email || '',
+    shortName
   };
 }
 
@@ -213,33 +171,28 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
     return map;
   }, [medicines]);
 
-  // Lista consolidada de operadores garantizando presencia de Caro, Gloria y equipo
+  // Lista consolidada de operadores cargada directamente desde Supabase
   const operatorList = useMemo(() => {
     const ops = new Map<string, { name: string; email: string; shortName: string }>();
 
-    // 1. Añadir los operadores base del CAPS
-    DEFAULT_CAPS_OPERATORS.forEach(op => {
-      ops.set(op.email.toLowerCase(), { name: op.name, email: op.email.toLowerCase(), shortName: op.shortName });
-    });
-
-    // 2. Añadir usuarios de la base de datos
+    // 1. Añadir los usuarios reales de la base de datos Supabase
     dbUsers.forEach(u => {
       if (u.email) {
-        const e = u.email.toLowerCase();
+        const e = u.email.toLowerCase().trim();
         const n = u.display_name || u.displayName || u.email;
-        if (!ops.has(e)) {
-          ops.set(e, { name: n, email: e, shortName: n.split(' ')[0] });
-        }
+        ops.set(e, { name: n, email: e, shortName: n.split(' ')[0] });
       }
     });
 
-    // 3. Añadir cualquier otro operador detectado en movimientos
+    // 2. Añadir cualquier otro usuario con movimientos reales (si no estuviese en la tabla por alguna razón)
     movements.forEach(m => {
-      const email = (m.user_email || 'anon@caps.local').toLowerCase();
-      const name = m.user_name || email;
-      const shortName = m.user_short || name.split(' ')[0];
-      if (!ops.has(email)) {
-        ops.set(email, { name, email, shortName });
+      if (m.user_email && m.user_email !== 'sin-email' && !m.user_email.includes('@caps.gob.ar')) {
+        const email = m.user_email.toLowerCase().trim();
+        const name = m.user_name || email;
+        const shortName = m.user_short || name.split(' ')[0];
+        if (!ops.has(email)) {
+          ops.set(email, { name, email, shortName });
+        }
       }
     });
 
@@ -252,11 +205,11 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
     return movements.filter(m => {
       // 1. Filtro de operador
       if (selectedOperator !== 'all') {
-        const email = (m.user_email || '').toLowerCase();
-        const name = (m.user_name || '').toLowerCase();
-        const sel = selectedOperator.toLowerCase();
+        const email = (m.user_email || '').toLowerCase().trim();
+        const name = (m.user_name || '').toLowerCase().trim();
+        const sel = selectedOperator.toLowerCase().trim();
 
-        const matches = email === sel || name === sel || email.includes(sel) || (sel.includes('caro') && (name.includes('caro') || email.includes('caro'))) || (sel.includes('gloria') && (name.includes('gloria') || email.includes('gloria')));
+        const matches = email === sel || name === sel || email.includes(sel) || name.includes(sel);
         if (!matches) return false;
       }
 
@@ -379,9 +332,11 @@ export function OperatorAuditReport({ medicines, onClose }: OperatorAuditReportP
 
     // Sumarizar según los movimientos filtrados
     filteredMovements.forEach(m => {
-      const email = (m.user_email || 'anon@caps.local').toLowerCase();
-      const name = m.user_name || email;
+      const email = (m.user_email || '').toLowerCase().trim();
+      const name = m.user_name || email || 'Personal de Farmacia';
       const qty = Number(m.quantity) || 0;
+
+      if (!email) return;
 
       if (!map.has(email)) {
         map.set(email, {

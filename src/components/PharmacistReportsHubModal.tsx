@@ -4,20 +4,20 @@ import {
   UserCheck, 
   HeartHandshake, 
   Hourglass, 
-  CalendarDays, 
   TrendingUp, 
   X, 
   BarChart3, 
   Sparkles,
-  ChevronRight
+  Boxes
 } from 'lucide-react';
+import { DemandAndRotationReport } from './DemandAndRotationReport';
 import { OperatorAuditReport } from './OperatorAuditReport';
 import { DonationBalanceReport } from './DonationBalanceReport';
 import { DormantSamplesReport } from './DormantSamplesReport';
 import { MostDispensedReport } from './MostDispensedReport';
 import { cn } from '../lib/utils';
 
-export type ReportTab = 'operator-audit' | 'donation-balance' | 'dormant-samples' | 'most-dispensed';
+export type ReportTab = 'demand-rotation' | 'operator-audit' | 'donation-balance' | 'dormant-samples' | 'most-dispensed';
 
 interface PharmacistReportsHubModalProps {
   isOpen: boolean;
@@ -30,9 +30,16 @@ export function PharmacistReportsHubModal({
   isOpen,
   onClose,
   medicines,
-  initialTab = 'operator-audit'
+  initialTab = 'demand-rotation'
 }: PharmacistReportsHubModalProps) {
   const [activeTab, setActiveTab] = useState<ReportTab>(initialTab);
+
+  // Sincronizar activeTab si cambia initialTab
+  React.useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
 
   if (!isOpen) return null;
 
@@ -52,7 +59,7 @@ export function PharmacistReportsHubModal({
                   Exclusivo Farmacéutico / Admin
                 </span>
               </div>
-              <p className="text-xs text-slate-500 font-medium">Informes de trazabilidad, efectividad social y optimización de stock</p>
+              <p className="text-xs text-slate-500 font-medium">Informes de demanda por período, rotación APM, trazabilidad y balance social</p>
             </div>
           </div>
 
@@ -68,6 +75,19 @@ export function PharmacistReportsHubModal({
 
         {/* TAB NAVIGATION BAR */}
         <div className="bg-white px-6 py-2 border-b border-slate-200 flex items-center gap-2 overflow-x-auto scrollbar-none">
+          <button
+            onClick={() => setActiveTab('demand-rotation')}
+            className={cn(
+              "px-4 py-2.5 rounded-2xl font-black text-xs flex items-center gap-2 transition-all whitespace-nowrap active:scale-95",
+              activeTab === 'demand-rotation'
+                ? "bg-orange-600 text-white shadow-sm shadow-orange-200"
+                : "text-slate-600 hover:bg-slate-100"
+            )}
+          >
+            <Boxes size={16} className={activeTab === 'demand-rotation' ? "text-white" : "text-orange-500"} />
+            Demanda y Rotación APM
+          </button>
+
           <button
             onClick={() => setActiveTab('operator-audit')}
             className={cn(
@@ -117,12 +137,16 @@ export function PharmacistReportsHubModal({
             )}
           >
             <TrendingUp size={16} className={activeTab === 'most-dispensed' ? "text-white" : "text-blue-500"} />
-            Más Dispensados
+            Ranking General
           </button>
         </div>
 
         {/* TAB CONTENT (SCROLLABLE BODY) */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-8">
+          {activeTab === 'demand-rotation' && (
+            <DemandAndRotationReport medicines={medicines} onClose={onClose} />
+          )}
+
           {activeTab === 'operator-audit' && (
             <OperatorAuditReport medicines={medicines} onClose={onClose} />
           )}

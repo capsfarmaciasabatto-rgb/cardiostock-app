@@ -114,128 +114,28 @@ export function saveLocalBatches(batches: Batch[]): void {
   }
 }
 
-export const DEFAULT_CAPS_OPERATORS = [
-  { name: 'Farm. Sabatto (Administrador)', email: 'capsfarmaciasabatto@gmail.com', role: 'FARMACEUTICO', shortName: 'Sabatto' },
-  { name: 'Téc. Carolina (Caro)', email: 'caro.farmacia@caps.gob.ar', role: 'TECNICO', shortName: 'Caro' },
-  { name: 'Téc. Gloria', email: 'gloria.farmacia@caps.gob.ar', role: 'TECNICO', shortName: 'Gloria' },
-  { name: 'Téc. Laura Méndez', email: 'laura.mendez@caps.gob.ar', role: 'TECNICO', shortName: 'Laura' },
-  { name: 'Téc. Carlos Benítez', email: 'carlos.benitez@caps.gob.ar', role: 'TECNICO', shortName: 'Carlos' },
-  { name: 'Dr. Alejandro Rossi', email: 'arossi@caps.gob.ar', role: 'MEDICO', shortName: 'Dr. Rossi' }
-];
-
 export function getLocalMovements(): any[] {
   try {
     const saved = localStorage.getItem(STORAGE_KEYS.MOVEMENTS);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        // Verificar si contiene movimientos de Caro o Gloria, si no, regenerar/enriquecer
-        const hasCaro = parsed.some(m => 
-          (m.user_name && m.user_name.toLowerCase().includes('caro')) ||
-          (m.user_email && m.user_email.toLowerCase().includes('caro'))
+      if (Array.isArray(parsed)) {
+        // Filtrar y limpiar cualquier registro con dominios ficticios de pruebas previas
+        const clean = parsed.filter(m => 
+          !m.id?.toString().startsWith('seed-') &&
+          !m.user_email?.includes('@caps.gob.ar')
         );
-        const hasGloria = parsed.some(m => 
-          (m.user_name && m.user_name.toLowerCase().includes('gloria')) ||
-          (m.user_email && m.user_email.toLowerCase().includes('gloria'))
-        );
-
-        if (hasCaro && hasGloria) {
-          return parsed;
+        if (clean.length !== parsed.length) {
+          localStorage.setItem(STORAGE_KEYS.MOVEMENTS, JSON.stringify(clean));
         }
+        return clean;
       }
     }
   } catch (err) {
     console.warn('Error reading movements from localStorage:', err);
   }
 
-  // Generar historial realista para todos los operadores del CAPS (incluyendo Caro y Gloria)
-  const meds = getLocalMedicines();
-  const operators = DEFAULT_CAPS_OPERATORS;
-
-  const now = new Date();
-  const initialMovements: any[] = [];
-
-  // Muestras ingresadas y dispensadas con fechas realistas (últimos 120 días)
-  meds.forEach((med, idx) => {
-    // 1. Ingreso inicial de muestra médica (donación)
-    const daysAgoEntry = 20 + (idx * 4) % 110;
-    const entryDate = new Date(now.getTime() - daysAgoEntry * 24 * 60 * 60 * 1000);
-    const entryQty = 20 + ((idx * 7) % 40);
-    const opEntry = operators[idx % operators.length];
-
-    initialMovements.push({
-      id: `seed-in-${idx}`,
-      medicine_id: med.id,
-      medicine_name: med.droga,
-      type: 'ingreso',
-      quantity: entryQty,
-      reason: 'Ingreso de muestras médicas (Donación de laboratorio)',
-      is_adjustment: false,
-      justification: 'Recepción periódica de muestras',
-      user_email: opEntry.email,
-      user_name: opEntry.name,
-      created_at: entryDate.toISOString()
-    });
-
-    // 2. Si NO es de los medicamentos que dejamos deliberadamente "dormidos" (idx 3, 7, 12, 18, 22), agregamos dispensas
-    const isDormant = [3, 7, 12, 18, 22].includes(idx % 25);
-    if (!isDormant) {
-      // Dispensas escalonadas rotando por todos los técnicos y médicos
-      const dispCount = 2 + (idx % 4);
-      for (let d = 0; d < dispCount; d++) {
-        const daysAgoDisp = Math.max(1, daysAgoEntry - (d + 1) * 8 - (idx % 6));
-        const dispDate = new Date(now.getTime() - daysAgoDisp * 24 * 60 * 60 * 1000);
-        const dispQty = 2 + ((idx + d) % 5);
-        const opDisp = operators[(idx + d + 1) % operators.length];
-
-        initialMovements.push({
-          id: `seed-out-${idx}-${d}`,
-          medicine_id: med.id,
-          medicine_name: med.droga,
-          type: 'dispensa',
-          quantity: dispQty,
-          reason: 'Dispensa médica ambulatoria / Consulta de cardiología',
-          is_adjustment: false,
-          justification: 'Receta médica autorizada',
-          user_email: opDisp.email,
-          user_name: opDisp.name,
-          created_at: dispDate.toISOString()
-        });
-      }
-    }
-
-    // 3. Ajustes ocasionales de inventario (auditoría / arqueos)
-    if (idx % 5 === 0) {
-      const daysAgoAdj = 10 + (idx % 30);
-      const adjDate = new Date(now.getTime() - daysAgoAdj * 24 * 60 * 60 * 1000);
-      const opAdj = operators[idx % 3]; // Rota entre Farm. Sabatto, Caro y Gloria
-
-      initialMovements.push({
-        id: `seed-adj-${idx}`,
-        medicine_id: med.id,
-        medicine_name: med.droga,
-        type: idx % 2 === 0 ? 'dispensa' : 'ingreso',
-        quantity: 2,
-        reason: idx % 2 === 0 ? 'Ajuste manual: Descarte por merma/rotura de blíster' : 'Ajuste manual: Recuento físico por arqueo semanal',
-        is_adjustment: true,
-        justification: idx % 2 === 0 ? 'Merma física identificada en estantería' : 'Sobrante hallado en conteo ciego',
-        user_email: opAdj.email,
-        user_name: opAdj.name,
-        created_at: adjDate.toISOString()
-      });
-    }
-  });
-
-  // Ordenar de más reciente a más antiguo
-  initialMovements.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-
-  try {
-    localStorage.setItem(STORAGE_KEYS.MOVEMENTS, JSON.stringify(initialMovements));
-  } catch (e) {
-    console.warn('Could not save seed movements:', e);
-  }
-
-  return initialMovements;
+  return [];
 }
 
 export function saveLocalMovement(movement: any): void {
