@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from './lib/supabase'
 import { Medicine, Movement, MovementType, User, Batch, UserRole } from './types';
-import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check, Upload, TrendingUp, CalendarDays, ClipboardCheck, UserCheck, HeartHandshake, Hourglass, BarChart3, Sparkles } from 'lucide-react';
+import { Search, Plus, Minus, LogIn, LogOut, Package, History, AlertCircle, Calendar, ClipboardList, X, HeartPulse, MapPin, LayoutGrid, List, ArrowDownAz, Tags, FileText, Check, Upload, TrendingUp, CalendarDays, ClipboardCheck, UserCheck, HeartHandshake, Hourglass, BarChart3, Sparkles, RefreshCw, Radio } from 'lucide-react';
 import { MostDispensedReport } from './components/MostDispensedReport';
 import { RotativeInventoryModal } from './components/RotativeInventoryModal';
 import { ExpirationAlerts } from './components/ExpirationAlerts';
@@ -107,6 +107,8 @@ export default function App() {
   const [editingBatch, setEditingBatch] = useState<Batch | null>(null);
   const [batchRefreshKey, setBatchRefreshKey] = useState(0);
   const [isUpdatingBatch, setIsUpdatingBatch] = useState(false);
+  const [isLiveConnected, setIsLiveConnected] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Form states for new medicine
   const [newMedicine, setNewMedicine] = useState<Partial<Medicine>>({
@@ -185,7 +187,8 @@ export default function App() {
   };
 
   // --- Cargar medicamentos con stock real sincronizado con lotes ---
-  const fetchMedicines = async () => {
+  const fetchMedicines = async (silent = false) => {
+    if (!silent) setIsSyncing(true);
     try {
       const { data: medsData, error: medsError } = await supabase
         .from('medicines')
@@ -224,14 +227,86 @@ export default function App() {
 
       saveLocalMedicines(mapped);
       setMedicines(mapped);
+
+      // Si el usuario tiene la ficha de detalle abierta, sincronizarla al instante
+      setSelectedMedicine(prev => {
+        if (!prev) return null;
+        const updated = mapped.find(m => m.id === prev.id);
+        return updated || prev;
+      });
+
+      // Refrescar lotes en cascada
+      setBatchRefreshKey(k => k + 1);
     } catch (err) {
       const fallbackData = getLocalMedicines();
       setMedicines(fallbackData);
+    } finally {
+      if (!silent) setIsSyncing(false);
     }
   };
 
+  // --- Sincronización en tiempo real multi-dispositivo ---
   useEffect(() => {
     fetchMedicines();
+
+    // 1. Canal WebSocket de Supabase en tiempo real (push instantáneo sub-segundo)
+    const channel = supabase
+      .channel('cardio-stock-realtime-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'medicines' },
+        (payload) => {
+          console.log('⚡ Sincronización Realtime (medicines):', payload);
+          fetchMedicines(true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'batches' },
+        (payload) => {
+          console.log('⚡ Sincronización Realtime (batches):', payload);
+          fetchMedicines(true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'movements' },
+        (payload) => {
+          console.log('⚡ Sincronización Realtime (movements):', payload);
+          fetchMedicines(true);
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setIsLiveConnected(true);
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          setIsLiveConnected(false);
+        }
+      });
+
+    // 2. Sincronización automática inmediata al cambiar de ventana o volver a la pestaña
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        fetchMedicines(true);
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    // 3. Respaldo periódico inteligente cada 8 segundos mientras la app esté visible en pantalla
+    // Garantiza actualización continua entre diferentes PCs sin necesidad de F5
+    const pollInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchMedicines(true);
+      }
+    }, 8000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      clearInterval(pollInterval);
+    };
   }, []);
 
   const isFarmaceutico = user?.role === 'FARMACEUTICO';
@@ -788,6 +863,9 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
         console.warn('Sync diferido en Supabase:', cloudErr);
       }
 
+      // Reconciliar datos frescos de inmediato
+      fetchMedicines(true);
+
       alert(isAdjustment ? `¡Ajuste de inventario registrado correctamente! Nuevo stock: ${newStock}` : (type === 'ingreso' ? '¡Ingreso de stock registrado con éxito!' : '¡Dispensa registrada con éxito!'));
 
       setShowMovementModal(false);
@@ -959,7 +1037,42 @@ const handleUpdateMedicine = async (e: React.FormEvent) => {
             </div>
           </div>
 
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-3 sm:gap-6">
+             {/* Indicador de Sincronización en Tiempo Real Multi-Dispositivo */}
+             <div 
+               className={cn(
+                 "flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-sm",
+                 isSyncing 
+                   ? "bg-amber-50 border-amber-200 text-amber-800" 
+                   : (isLiveConnected 
+                       ? "bg-emerald-50 border-emerald-200 text-emerald-800" 
+                       : "bg-slate-50 border-slate-200 text-slate-600")
+               )}
+               title={isSyncing ? "Sincronizando con Supabase..." : (isLiveConnected ? "Conexión en vivo activa: Los cambios en cualquier PC se reflejan al instante" : "Conectando al canal en vivo")}
+             >
+               <span className="relative flex h-2.5 w-2.5">
+                 <span className={cn(
+                   "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
+                   isSyncing ? "bg-amber-400" : (isLiveConnected ? "bg-emerald-400" : "bg-slate-300")
+                 )} />
+                 <span className={cn(
+                   "relative inline-flex rounded-full h-2.5 w-2.5",
+                   isSyncing ? "bg-amber-500" : (isLiveConnected ? "bg-emerald-500" : "bg-slate-400")
+                 )} />
+               </span>
+               <span className="hidden sm:inline font-black text-[11px] uppercase tracking-wide">
+                 {isSyncing ? "Sincronizando..." : (isLiveConnected ? "En Vivo" : "Reconectando...")}
+               </span>
+               <button
+                 type="button"
+                 onClick={() => fetchMedicines(false)}
+                 title="Sincronizar ahora con la base de datos"
+                 className="p-1 rounded-md hover:bg-black/5 active:scale-90 transition-all text-slate-500 hover:text-slate-800"
+               >
+                 <RefreshCw size={12} className={cn("transition-transform", isSyncing && "animate-spin text-orange-600")} />
+               </button>
+             </div>
+
              <div className="hidden sm:flex flex-col items-end pr-6 border-r border-slate-100">
                 <p className="text-sm font-black text-slate-800 lowercase">{user.displayName || user.email}</p>
                 <div className="flex items-center gap-3 mt-1">
